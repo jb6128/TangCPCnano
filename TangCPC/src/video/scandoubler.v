@@ -36,6 +36,9 @@ module scandoubler
 	input      [3:0] g_in,
 	input      [3:0] b_in,
 
+	// horizontal pixel offset (shifts read position in line buffer)
+	input [HCNT_WIDTH-1:0] h_offset,
+
 	// output interface
 	output reg       hs_out,
 	output reg       vs_out,
@@ -200,8 +203,8 @@ always @(posedge clk_sys) begin
 		if(sd_hcnt == hs_max)  hs_sd <= 0;
 		if(sd_hcnt == hs_rise) hs_sd <= 1;
 
-		// read data from line sd_buffer
-		sd_buffer_out <= sd_buffer[{~line_toggle, sd_hcnt}];
+		// read data from line sd_buffer (h_offset shifts image horizontally)
+		sd_buffer_out <= sd_buffer[{~line_toggle, sd_hcnt + h_offset}];
 		vs_sd <= vs_in;
 	end
 	if(bypass) begin

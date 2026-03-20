@@ -173,6 +173,51 @@ always @(posedge clk32) begin
         vsync_cnt <= vsync_cnt + 1;
 end
 
+// h_offset : décalage horizontal dans le line buffer scandoubler
+// Valeur calibrée visuellement via les boutons S1/S2 (voir ci-dessous)
+localparam [9:0] H_OFFSET = 10'd320;
+wire [9:0] h_offset_reg = H_OFFSET;
+
+// --- Mode calibration horizontale (décommenter pour ajuster H_OFFSET) ---
+// Utilise S1 (+32 pixels) et S2 (-32 pixels) pour décaler l'image en temps réel.
+// Les LEDs affichent h_offset_reg[9:4] en binaire. Une fois centré,
+// convertir la valeur LED en décimal × 16 et hardcoder H_OFFSET ci-dessus.
+// Exemple : LEDs = 010100 → 20 × 16 = 320.
+//
+// reg [19:0] s1_deb_cnt, s2_deb_cnt;
+// reg s1_stable, s2_stable, s1_prev, s2_prev;
+// wire s1_pressed = s1_stable && !s1_prev;
+// wire s2_pressed = s2_stable && !s2_prev;
+//
+// always @(posedge clk32) begin
+//     if (por) begin
+//         s1_deb_cnt <= 0; s2_deb_cnt <= 0;
+//         s1_stable <= 0;  s2_stable <= 0;
+//         s1_prev <= 0;    s2_prev <= 0;
+//     end else begin
+//         if (user != s1_stable) begin
+//             s1_deb_cnt <= s1_deb_cnt + 1;
+//             if (s1_deb_cnt == 20'hFFFFF) s1_stable <= user;
+//         end else s1_deb_cnt <= 0;
+//         s1_prev <= s1_stable;
+//         if (reset != s2_stable) begin
+//             s2_deb_cnt <= s2_deb_cnt + 1;
+//             if (s2_deb_cnt == 20'hFFFFF) s2_stable <= reset;
+//         end else s2_deb_cnt <= 0;
+//         s2_prev <= s2_stable;
+//     end
+// end
+//
+// reg [9:0] h_offset_reg;  // remplace le wire ci-dessus
+// always @(posedge clk32) begin
+//     if (por) h_offset_reg <= 10'd512;
+//     else begin
+//         if (s1_pressed) h_offset_reg <= h_offset_reg + 10'd32;
+//         if (s2_pressed) h_offset_reg <= h_offset_reg - 10'd32;
+//     end
+// end
+// assign leds_n = ~h_offset_reg[9:4];  // remplace l'assign LEDs CRTC
+
 assign leds_n = {
     ~core_dbg_r0_ok,            // [5]
     ~core_dbg_r4_ok,            // [4]
@@ -449,6 +494,7 @@ scandoubler #(.HCNT_WIDTH(10)) scandoubler_inst (
     .hs_in      ( cm_hs         ),
     .vs_in      ( cm_vs         ),
 
+    .h_offset   ( h_offset_reg[9:0] ),  // décalage horizontal ajustable
     .pixel_ena  (               ),    // non utilisé
     .r_out      ( sd_r          ),
     .g_out      ( sd_g          ),
@@ -463,39 +509,38 @@ wire [15:0] audio_zero [1:0];
 assign audio_zero[0] = 16'h0;
 assign audio_zero[1] = 16'h0;
 
-// Motif de test vert (bouton user = actif haut, PULL_MODE=DOWN)
-// Appuyer sur S1 : écran vert uni → vérifie que le pipeline HDMI fonctionne
-// Si l'écran est vert : HDMI OK, problème dans la vidéo CPC
-// Si l'écran reste noir : problème dans le pipeline HDMI lui-même
-wire [5:0] vid_r = user ? 6'h00 : sd_r;
-wire [5:0] vid_g = user ? 6'h3F : sd_g;   // vert maximal en mode test
-wire [5:0] vid_b = user ? 6'h00 : sd_b;
+// Vidéo CPC vers HDMI
+wire [5:0] vid_r = sd_r;
+wire [5:0] vid_g = sd_g;
+wire [5:0] vid_b = sd_b;
 
-// vreset : impulsion one-shot sur le premier front descendant du vsync CPC
-// Synchronise les compteurs HDMI avec le CPC au démarrage
+// vreset : one-shot au boot uniquement (sync verticale HDMI → CPC)
+// L'alignement horizontal est géré par h_offset dans le scandoubler
 reg sd_vs_d;
+reg vreset_pending;
 reg vreset_done;
 reg vreset_pulse;
 always @(posedge clk32) begin
     if (por) begin
-        sd_vs_d      <= 1'b0;
-        vreset_done  <= 1'b0;
-        vreset_pulse <= 1'b0;
+        sd_vs_d         <= 1'b0;
+        vreset_pending  <= 1'b0;
+        vreset_done     <= 1'b0;
+        vreset_pulse    <= 1'b0;
     end else begin
         sd_vs_d <= sd_vs;
+        vreset_pulse <= 1'b0;
+        // front descendant vsync → tirer vreset (une seule fois)
         if (!vreset_done && sd_vs_d && !sd_vs) begin
-            // front descendant du vsync scandoublé → aligner HDMI
             vreset_pulse <= 1'b1;
             vreset_done  <= 1'b1;
-        end else
-            vreset_pulse <= 1'b0;
+        end
     end
 end
 
 video2hdmi video2hdmi_inst (
     .clk_pixel_x5 ( clk160       ),  // 160 MHz TMDS
     .clk_pixel    ( clk32        ),  // 32 MHz pixel
-    .vreset       ( vreset_pulse ),  // sync HDMI au vsync CPC
+    .vreset       ( vreset_pulse ),  // sync HDMI au CPC, aligné hsync
     .vmode        ( 2'd1         ),  // PAL 50 Hz hardcodé (évite bascule NTSC/PAL au boot)
     .screen       ( 2'd0         ),  // standard (pas d'overscan)
     .r            ( vid_r        ),

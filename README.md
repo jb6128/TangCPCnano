@@ -106,6 +106,20 @@ openFPGALoader -b tangnano20k --write-flash --offset 0x200000 TangCPC/boot.rom
                   → HDMI output
 ```
 
+## HDMI horizontal calibration
+
+If the HDMI image appears shifted horizontally, the `H_OFFSET` parameter in `top.sv` can be recalibrated using the built-in button debug mode:
+
+1. In `top.sv`, uncomment the calibration block (search for "Mode calibration horizontale")
+2. Comment out the `wire [9:0] h_offset_reg = H_OFFSET;` line and the CRTC LED `assign leds_n` block
+3. Build and flash
+4. Use **S1** (+32 pixels) and **S2** (−32 pixels) to shift the image until centered
+5. Read the 6 LEDs as binary (MSB = LED5, LSB = LED0), multiply by 16 to get the offset value
+6. Hardcode the result in `localparam [9:0] H_OFFSET = 10'd<value>;`
+7. Re-comment the calibration block, restore the wire and LEDs, rebuild
+
+Current calibrated value: **320** (LEDs: `010100`).
+
 ## Developed with Claude
 
 This project was designed and coded in collaboration with [Claude Code](https://claude.ai/), Anthropic's AI coding assistant. The entire RTL integration — `top.sv`, `cpc_core.sv`, `cpc_sdram.v`, the video pipeline adaptation, pin constraints, build scripts, and iterative debugging — was done through conversation with Claude, starting from the MiSTer and MiSTeryNano source code as references.

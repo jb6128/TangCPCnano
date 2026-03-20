@@ -134,7 +134,10 @@ localparam [22:0] SDRAM_BASE_2 = 23'h41C000; // upper ROM bank 7 (AMSDOS)
 // ---------------------------------------------------------------------------
 // ROM map : AMSDOS présent en slot 7
 // ---------------------------------------------------------------------------
-assign rom_map = 256'h1 << 7; // bit 7 = AMSDOS
+// AMSDOS désactivé : le FDC (u765) n'est pas encore instancié,
+// AMSDOS boucle en essayant de l'initialiser → bloque le boot avant BASIC
+// Réactiver quand le FDC sera connecté : assign rom_map = 256'h1 << 7;
+assign rom_map = 256'd0;
 
 // Boot en écriture pendant le chargement, en lecture pendant le readback
 reg boot_we_r;
