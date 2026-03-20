@@ -70,10 +70,10 @@ openFPGALoader -b tangnano20k impl/pnr/TangCPC.fs
 
 ### Flash the CPC ROMs
 
-The CPC ROMs must be written to flash at offset `0x200000`. Prepare a `boot.rom` file (48 KB = OS 16K + BASIC 16K + AMSDOS 16K concatenated) and flash it:
+The CPC ROMs must be written to flash at offset `0x200000`. A `boot.rom` is included in `TangCPC/`:
 
 ```bash
-openFPGALoader -b tangnano20k --write-flash --offset 0x200000 boot.rom
+openFPGALoader -b tangnano20k --write-flash --offset 0x200000 TangCPC/boot.rom
 ```
 
 ## Architecture
