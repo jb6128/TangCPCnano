@@ -1,0 +1,28 @@
+# Gowin build artifacts
+TangCPC/impl/
+TangCPC/build_*.log
+TangCPC/build_log.txt
+
+# External reference projects (not part of CPCTang)
+Amstrad_MiSTer-master/
+MiSTeryNano-main/
+
+# Tools / installers
+*.exe
+
+# Claude Code / agent state
+.agents/
+.claude/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Gowin IDE project files (generated)
+*.gprj
+*.gprj.user
+
+# Debug notes (local only)
+TangCPC/reprise.md
