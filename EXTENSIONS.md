@@ -36,6 +36,12 @@ Added from other projects in this fork:
 
 Press **F12** to open the on-screen menu. Settings are stored with Settings → Save settings (`cpc.ini`). **Cold boot** behaves like a power-on (`cpc.ini` is loaded again), **Factory boot** starts with all settings at their defaults and without external ROMs (`cpc.ini` is neither read nor changed).
 
+## Upper ROMs
+
+A ROM set is a single .rom file: you can concatenate up to 16 ROM images (16 KB each) into one file of at most 256 KB. Block n is loaded into upper ROM slot n. Example: `copy /b a.rom+b.rom+c.rom set.rom` (Windows) or `cat a.rom b.rom c.rom > set.rom` (Linux).
+
+Note: block 0 replaces the BASIC ROM (slot 0) and block 7 the AMSDOS ROM (slot 7). Remove ROM-set or Clear slot brings back the original ROMs from the flash.
+
 ## Pin assignments (FPGA pin numbers, Tang Nano 20K, `constraint/TangCPC.cst`)
 
 All pins are 3.3 V LVCMOS. **Do not apply 5 V to any of them.**
@@ -64,6 +70,14 @@ Note: Do not connect DB9 pin 5/7 (+5 V).
 | CSYNC (active low) | 77 |
 
 Right header: 72, 71 | 55, 49 (GND next to them); left header: 73, 74 and 77. Drive 8 mA. Notes: pin 49 is also `LCD_BL` (do not attach an LCD to the FPC socket); pin 55 is also `I2S_LRCK` of the on-board audio amplifier (harmless while `PA_EN` is not driven). The pins are high impedance until the OSD option `RGB out` is set to On.
+
+Pins are 3V3. Connect CSYNC through a 220 Ω resistor and the colour pins through a 2-bit DAC
+```
+FPGA bit 1 pin ──[ R ]──┐
+                        ├──●── colour output ──► monitor input (75 Ω to GND)
+FPGA bit 0 pin ──[ R ]──┘
+```
+Two equal resistors per colour (thermometer coding), R = 470–560 Ω into a 75 Ω input: 470 Ω ≈ 0.8 V, 499 Ω ≈ 0.75 V, 560 Ω ≈ 0.7 V full-scale (calculated for 3.3 V pins). Lower R = brighter picture.
 
 ## Known limitations
 
