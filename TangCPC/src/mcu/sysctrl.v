@@ -1,303 +1,319 @@
 /*
-    sysctrl.v
- 
-    generic system control interface from/via the MCU
+    sysctrl.v -- TangCPC
 
-    TODO: This is currently very core specific. This needs to be
-    generic for all cores.
+    System control target (SPI target id 0) of the BL616 FPGA-Companion.
+
+    Based on the generic sysctrl.v of MiSTle-Dev/C64Nano (GPL-3.0) and the
+    MiSTeryNano original (Till Harbaum). The Atari ST / C64 specific
+    configuration variables were replaced by the CPC ones below. The OSD menu
+    itself is the gzip'ed XML in cpc_xml.hex (source: cpc.xml), read by the
+    companion with CMD 8.
+
+    Configuration variables (CMD 4, id character -> value):
+      "R"  reset: run(0), reset(1), cold boot(3)
+      "P"  floppy write protection: none(0), A(1), B(2), both(3)
+      "F"  FDC speed: normal(0), fast(1)
+      "L"  external ROM slot being edited (0..31)
+  "K"  clear the selected ROM slot (level, rising edge acts)
+  "C"  V lock: 0 = HDMI frame fixed at 624 rows, 1 = HDMI frame length follows the CPC frame
+  "E"  V lock / V pos speed: largest change of the HDMI frame length per frame, 1, 2, 4, 8, 16 rows (0..4, default 2)
+  "Z"  vertical picture position 0..15 (label -8..+7, 16 HDMI rows per step, default 8 = 0)
+  "Q"  remove the ROM set (level, rising edge acts)
+  "A"  AMSDOS ROM (slot 7) visible: off(0), on(1)
+  "W"  Z80 waits for SDRAM data: off(0, test only), on(1)
+  "H"  horizontal picture position 0..8 (h_offset = 192 + 32*value, default 4)
+  "T"  invert the tape input signal: normal(0), inverted(1)
+  "U"  tape protection: off(0, SAVE records into the mounted tape image), on(1, default)
+  "X"  HDMI active width: 720 px (0), 800 px (1, default, wider border)
+
+    As in the C64Nano the machine is held in reset after power-up until the
+    MCU releases it ("R"=0), or after a timeout of about 3 s if no companion
+    answers, so the CPC still boots without a BL616 firmware.
 */
 
 module sysctrl (
-  input		    clk,
-  input		    reset,
+  input             clk,
+  input             reset,          // active high
 
-  input		    data_in_strobe,
-  input		    data_in_start,
-  input [7:0]	    data_in,
+  input             data_in_strobe,
+  input             data_in_start,
+  input [7:0]       data_in,
   output reg [7:0]  data_out,
 
   // interrupt interface
-  output	    int_out_n,
-  input [7:0]	    int_in,
+  output            int_out_n,
+  input [7:0]       int_in,
   output reg [7:0]  int_ack,
 
-  input [1:0]	    buttons, // S0 and S1 buttons on Tang Nano 20k
+  input [1:0]       buttons,        // S0 and S1 buttons on Tang Nano 20k
 
-  output reg [1:0]  leds, // two leds can be controlled from the MCU
-  output reg [23:0] color, // a 24bit color to e.g. be used to drive the ws2812
+  output reg [1:0]  leds,           // two leds can be controlled from the MCU
+  output reg [23:0] color,          // 24 bit color e.g. for the ws2812
 
-  // IO port interface
-  input	[31:0]	    port_status,         // status bits to report additional info about the port
-  input	[7:0]	    port_out_available,  // number of bytes available for transmission to MCU
-  output reg	    port_out_strobe,
-  input [7:0]	    port_out_data,
-  input	[7:0]	    port_in_available,   // number of unused bytes in the input buffer
-  output reg	    port_in_strobe,
+  // IO port interface (serial port, not implemented by the CPC core)
+  input [31:0]      port_status,
+  input [7:0]       port_out_available,
+  output reg        port_out_strobe,
+  input [7:0]       port_out_data,
+  input [7:0]       port_in_available,
+  output reg        port_in_strobe,
   output reg [7:0]  port_in_data,
-		
+
   // values that can be configured by the user
-  output reg [1:0]  system_chipset,
-  output reg	    system_memory,
-  output reg	    system_video,
-  output reg [1:0]  system_reset,
-  output reg [1:0]  system_scanlines,
-  output reg [1:0]  system_volume,
-  output reg [1:0]  system_screen,
+  output [1:0]      system_reset,
   output reg [1:0]  system_floppy_wprot,
-  output reg	    system_cubase_en,
-  output reg [1:0]  system_port_mouse,
-  output reg [1:0]  system_port_joy,
-  output reg	    system_tos_slot
+  output reg        system_fdc_fast,
+  output reg [4:0]  system_rom_slot,
+  output reg        system_rom_clear,
+  output reg        system_rom_clearset,
+  output reg        system_amsdos,
+  output reg        system_waitgate,
+  output reg        system_hlock,
+  output reg        system_firesw,   // OSD id J: 1 = swap the two DB9 fire buttons
+  output reg        system_rgbout,   // OSD id G: 1 = drive the 15 kHz RGB/CSYNC pins, 0 = high-Z (default)
+  output reg        system_vlock,    // OSD id C: HDMI frame length follows the CPC frame length
+  output reg  [2:0] system_vrate,    // OSD id E: V lock / V pos: max. change of the HDMI frame length per frame, 1 << value rows (0..4, default 2 = 4 rows)
+  output reg  [3:0] system_vpos,     // OSD id Z: vertical position, 0..15 (8 = as before), 16 HDMI rows per step
+  output reg  [2:0] system_volume,   // OSD id V: HDMI audio volume 0..4 = 0 / 25 / 50 / 75 / 100 % (default 4)
+  output reg        system_tapesnd,  // OSD id N: 1 = tape signal audible on the HDMI audio
+  output reg        system_mono,     // OSD id M: 0 = colour, 1 = green monitor
+  output reg        system_model664, // OSD id Y: 0 = CPC 6128 (OS, BASIC 1.1, 128K), 1 = CPC 664 (OS, BASIC, 64K); effective at the next reset
+  output reg        system_wide,     // OSD id D: 0 = 4:3, 1 = full screen (16:9 flag)
+  output reg  [3:0] system_hpos,
+  output reg        system_tape_inv,
+  output reg        system_tape_prot, // OSD id U: 1 = tape protected (default), 0 = SAVE records into the tape image
+  output reg        system_w800      // OSD id X: 0 = 720 px active width, 1 = 800 px (default)
 );
 
 reg [3:0] state;
 reg [7:0] command;
 reg [7:0] id;
-   
-// reverse data byte for rgb   
-wire [7:0] data_in_rev = { data_in[0], data_in[1], data_in[2], data_in[3], 
+
+// reverse data byte for rgb
+wire [7:0] data_in_rev = { data_in[0], data_in[1], data_in[2], data_in[3],
                            data_in[4], data_in[5], data_in[6], data_in[7] };
 
-// coldboot flash and system interrupt   
-reg coldboot = 1'b1;   
-reg sys_int = 1'b1;
+// coldboot flag and system interrupt
+reg coldboot = 1'b1;
+reg sys_int  = 1'b1;
 
 // registers to report button interrupts
 reg [1:0] buttonsD, buttonsD2;
-reg	  buttons_irq_enable;
-   
-// the system cobtrol interrupt or any other interrupt (e,g sdc, hid, ...)
+reg       buttons_irq_enable;
+
+// the system control interrupt or any other interrupt (sdc, hid, ...)
 // activates the interrupt line to the MCU by pulling it low
-assign int_out_n = (int_in != 8'h00 || sys_int)?1'b0:1'b1;
-   
+assign int_out_n = (int_in != 8'h00 || sys_int) ? 1'b0 : 1'b1;
+
+// by default the system is in reset
+reg [1:0] main_reset = 2'b11;
+assign system_reset = main_reset;
+
+// 96_000_000 clk32 cycles = 3 s
+reg [31:0] main_reset_timeout;
+
 reg       port_out_availableD;
-reg [7:0] port_cmd;   
+reg [7:0] port_cmd;
 reg [7:0] port_index;
 
-// include the menu rom derived from atarist.xml
+// menu rom: gzip'ed cpc.xml
+//   gzip -n -c cpc.xml | xxd -c1 -p > cpc_xml.hex   (see tools/gen_menu_hex.py)
 reg [11:0] menu_rom_addr;
 reg [7:0]  menu_rom_data;
+reg [7:0]  cpc_xml [0:2047];
+initial $readmemh("cpc_xml.hex", cpc_xml);
 
-// generate hex e.g.:
-// gzip -n atarist.xml
-// xxd -c1 -p atarist.xml.gz > atarist_xml.hex
-reg [7:0] atarist_xml[1024];
-`ifndef EFINIX
-   initial $readmemh("atarist_xml.hex", atarist_xml);
-`else
-  // it would be great if a global define could be used for the
-  // filename here. But that does not work, at least not in efinity
-  initial $readmemh("atarist_t20_xml.hex", atarist_xml);
-`endif
-   
 always @(posedge clk)
-  menu_rom_data <= atarist_xml[menu_rom_addr];
-   
-// process mouse events
+  menu_rom_data <= cpc_xml[menu_rom_addr[10:0]];
+
 always @(posedge clk) begin
    if(reset) begin
-      state <= 4'd0;      
-      leds <= 2'b00;        // after reset leds are off
-      color <= 24'h000000;  // color black -> rgb led off
+      state <= 4'd0;
+      leds <= 2'b00;
+      color <= 24'h000000;
 
-      buttons_irq_enable <= 1'b1;  // allow buttons irq
+      main_reset <= 2'b11;
+      main_reset_timeout <= 32'd96_000_000;
+
+      buttons_irq_enable <= 1'b1;
       int_ack <= 8'h00;
-      coldboot = 1'b1;      // reset is actually the power-on-reset
-      sys_int = 1'b1;       // coldboot interrupt
+      coldboot <= 1'b1;
+      sys_int <= 1'b1;
 
       port_out_strobe <= 1'b0;
       port_in_strobe <= 1'b0;
-      
-      // OSD value defaults. These should be sane defaults, but the MCU
-      // will very likely override these early
-      system_chipset <= 2'd0;       // regular ST
-      system_memory <= 1'b0;        // 4 MB
-      system_video <= 1'b0;         // color
-      system_scanlines <= 2'b00;    // no scanlines
-      system_volume <= 2'b00;       // mute
-      system_screen <= 2'b00;       // normal video 
-      system_floppy_wprot <= 2'b00; // floppy not write protected
-      system_cubase_en <= 1'b0;     // no cubase dongle
-      system_port_mouse <= 2'd0;    // mouse on usb -> db9 joystick
-      system_port_joy <= 2'd0;
-      system_tos_slot <= 1'b0;      // primary tos slot
-   end else begin // if (reset)
-      //  bring button state into local clock domain
+
+      // sane defaults, the MCU will override these early
+      system_floppy_wprot <= 2'b00;
+      system_fdc_fast <= 1'b0;
+      system_rom_slot <= 5'd0;
+      system_rom_clear <= 1'b0;
+      system_rom_clearset <= 1'b0;
+      system_amsdos <= 1'b0;
+      system_waitgate <= 1'b1;
+      system_hlock <= 1'b1;
+      system_mono <= 1'b0;
+      system_tapesnd <= 1'b0;
+      system_volume <= 3'd4;
+      system_vpos <= 4'd8;
+      system_vlock <= 1'b0;
+      system_vrate <= 3'd2;
+      system_rgbout <= 1'b0;
+      system_firesw <= 1'b0;
+      system_wide <= 1'b0;
+      system_model664 <= 1'b0;
+      system_hpos <= 4'd8;
+      system_tape_inv <= 1'b0;
+      system_tape_prot <= 1'b1;
+      system_w800 <= 1'b1;
+   end else begin
       buttonsD <= buttons;
       buttonsD2 <= buttonsD;
-      
+
       int_ack <= 8'h00;
       port_out_strobe <= 1'b0;
       port_in_strobe <= 1'b0;
 
-      // iack bit 0 acknowledges the system control interrupt
-      if(int_ack[0]) sys_int <= 1'b0;      
-            
+      // iack bit 0 acknowledges the coldboot notification
+      if(int_ack[0]) sys_int <= 1'b0;
+
+      // release main reset after the timeout
+      if(main_reset_timeout != 32'd0) begin
+         main_reset_timeout <= main_reset_timeout - 32'd1;
+         if(main_reset_timeout == 32'd1)
+            main_reset <= 2'b00;
+      end
+
       // (further) data has just become available, so raise interrupt
       port_out_availableD <= (port_out_available != 8'd0);
-      if(port_out_available && !port_out_availableD)
-	sys_int <= 1'b1;
-      
+      if((port_out_available != 8'd0) && !port_out_availableD)
+         sys_int <= 1'b1;
+
       // monitor buttons for changes and raise interrupt
-      if(buttons_irq_enable) begin
-        if(buttonsD2 != buttonsD) begin
-            // irq_enable prevents further interrupts until
-            // the button state has actually been read by the MCU
-            sys_int <= 1'b1;
-            buttons_irq_enable <= 1'b0;
-        end
+      if(buttons_irq_enable && (buttonsD2 != buttonsD)) begin
+         sys_int <= 1'b1;
+         buttons_irq_enable <= 1'b0;
       end
 
       if(data_in_strobe) begin
-        if(data_in_start) begin
-           state <= 4'd0;
-           command <= data_in;
-	   menu_rom_addr <= 12'd0;
-	   data_out <= 8'h00;
-        end else begin
+         if(data_in_start) begin
+            state <= 4'd0;
+            command <= data_in;
+            menu_rom_addr <= 12'd0;
+            data_out <= 8'h00;
+         end else begin
             if(state != 4'd15) state <= state + 4'd1;
-	    
+
             // CMD 0: status data
             if(command == 8'd0) begin
-                // return some pattern that would not appear randomly
-	        // on e.g. an unprogrammed device
-                if(state == 4'd0) data_out <= 8'h5c;
-                if(state == 4'd1) data_out <= 8'h42;
-                if(state == 4'd2) data_out <= 8'h00;   // core id 0 = Generic core
-            end
-	   
-            // CMD 1: there are two MCU controlled LEDs
-            if(command == 8'd1) begin
-                if(state == 4'd0) leds <= data_in[1:0];
+               if(state == 4'd0) data_out <= 8'h5c;
+               if(state == 4'd1) data_out <= 8'h42;
+               if(state == 4'd2) data_out <= 8'h00;   // core id 0 = generic core
             end
 
-            // CMD 2: a 24 color value to be mapped e.g. onto the ws2812
+            // CMD 1: two MCU controlled LEDs
+            if(command == 8'd1) begin
+               if(state == 4'd0) leds <= data_in[1:0];
+            end
+
+            // CMD 2: 24 bit color value
             if(command == 8'd2) begin
-                if(state == 4'd0) color[15: 8] <= data_in_rev;
-                if(state == 4'd1) color[ 7: 0] <= data_in_rev;
-                if(state == 4'd2) color[23:16] <= data_in_rev;
+               if(state == 4'd0) color[15: 8] <= data_in_rev;
+               if(state == 4'd1) color[ 7: 0] <= data_in_rev;
+               if(state == 4'd2) color[23:16] <= data_in_rev;
             end
 
             // CMD 3: return button state
             if(command == 8'd3) begin
                data_out <= { 6'b000000, buttons };
-	       // re-enable interrupt once state has been read
                buttons_irq_enable <= 1'b1;
             end
 
-            // CMD 4: config values (e.g. set by user via OSD)
+            // CMD 4: config values (set by the user via OSD)
             if(command == 8'd4) begin
-                // second byte can be any character which identifies the variable to set 
-                if(state == 4'd0) id <= data_in;
+               if(state == 4'd0) id <= data_in;
 
-                if(state == 4'd1) begin
-                    // Value "C": chipset ST(0), MegaST(1) or STE(2)
-                    if(id == "C") system_chipset <= data_in[1:0];
-                    // Value "M": 4MB(0) or 8MB(1)
-                    if(id == "M") system_memory <= data_in[0];
-                    // Value "V": color(0) or monochrome(1)
-                    if(id == "V") system_video <= data_in[0];
-                    // Value "R": coldboot(3), reset(1) or run(0)
-                    if(id == "R") system_reset <= data_in[1:0];
-                    // Value "S": scanlines none(0), 25%(1), 50%(2) or 75%(3)
-                    if(id == "S") system_scanlines <= data_in[1:0];
-                    // Value "A": volume mute(0), 33%(1), 66%(2) or 100%(3)
-                    if(id == "A") system_volume <= data_in[1:0];
-                    // Value "W": normal (0), overscan (1) or  wide (2)
-                    if(id == "W") system_screen <= data_in[1:0];
-                    // Value "P": floppy write protecion None(0), A(1), B(2) both(3)
-                    if(id == "P") system_floppy_wprot <= data_in[1:0];
-                    // Value "Q": enable (1) or disable (0) Cubase dongle(s)
-                    if(id == "Q") system_cubase_en <= data_in[0];
-                    // Value "J": USB Mouse(0), DB9/Atari ST(1) or DB9/Amiga(2)
-                    if(id == "J") system_port_mouse <= data_in[1:0];
-                    // Value "U": Joysticks USB only(0), 1 x Atari(1), 2 x Atari(2) 
-                    if(id == "U") system_port_joy <= data_in[1:0];
-                    // Value "T": Primary(0) TOS slot or Secondary(1)
-                    if(id == "T") system_tos_slot <= data_in[0];
-                end
+               if(state == 4'd1) begin
+                  if(id == "R") begin
+                     main_reset <= data_in[1:0];
+                     // cancel the power-up timeout once the MCU is active
+                     main_reset_timeout <= 32'd0;
+                  end
+                  if(id == "P") system_floppy_wprot <= data_in[1:0];
+                  if(id == "F") system_fdc_fast <= data_in[0];
+                  if(id == "L") system_rom_slot <= data_in[4:0];
+                  if(id == "K") system_rom_clear <= data_in[0];
+                  if(id == "Q") system_rom_clearset <= data_in[0];
+                  if(id == "A") system_amsdos <= data_in[0];
+                  if(id == "W") system_waitgate <= data_in[0];
+                  if(id == "S") system_hlock <= data_in[0];
+                  if(id == "M") system_mono <= data_in[0];
+                  if(id == "N") system_tapesnd <= data_in[0];
+                  if(id == "V") system_volume <= (data_in[2:0] > 3'd4) ? 3'd4 : data_in[2:0];
+                  if(id == "G") system_rgbout <= data_in[0];
+                  if(id == "J") system_firesw <= data_in[0];
+                  if(id == "D") system_wide <= data_in[0];
+                  if(id == "Y") system_model664 <= data_in[0];
+                  if(id == "H") system_hpos <= data_in[3:0];
+                  if(id == "Z") system_vpos <= data_in[3:0];
+                  if(id == "C") system_vlock <= data_in[0];
+                  if(id == "E") system_vrate <= (data_in[2:0] > 3'd4) ? 3'd4 : data_in[2:0];
+                  if(id == "T") system_tape_inv <= data_in[0];
+                  if(id == "U") system_tape_prot <= data_in[0];
+                  if(id == "X") system_w800 <= data_in[0];
+               end
             end
 
             // CMD 5: interrupt control
             if(command == 8'd5) begin
-                // second byte acknowleges the interrupts
-                if(state == 4'd0) int_ack <= data_in;
-
-	        // interrupt[0] notifies the MCU of a FPGA cold boot e.g. if
-                // the FPGA has been loaded via USB
-                data_out <= { int_in[7:1], sys_int };
+               if(state == 4'd0) int_ack <= data_in;
+               data_out <= { int_in[7:1], sys_int };
             end
-	   
+
             // CMD 6: read system interrupt source
             if(command == 8'd6) begin
-	        // bit[0]: coldboot flag
-	        // bit[1]: port data is available
-	        // bit[2]: buttons state change has been detected
-                data_out <= { 5'b00000, !buttons_irq_enable, (port_out_available != 8'd0), coldboot };
-	        // reading the interrupt source acknowledges the coldboot notification
-	        if(state == 4'd0) coldboot <= 1'b0;            
-	    end
+               // bit0: coldboot, bit1: port data, bit2: buttons changed
+               data_out <= { 5'b00000, !buttons_irq_enable, (port_out_available != 8'd0), coldboot };
+               if(state == 4'd0) coldboot <= 1'b0;
+            end
 
-            // CMD 7: port command (e.g. rs232)
+            // CMD 7: port command (serial port, not implemented)
             if(command == 8'd7) begin
-
-	       // the first two bytes of a port command always have the same meaning ...
                if(state == 4'd0) begin
-		  // first byte is the subcommand
-		  port_cmd <= data_in;
-		  // return the number of ports implemented in this core
-		  data_out <= 8'd1;
-	       end else if(state == 4'd1) begin
-		  // second byte is the port index (if several ports are supported)
-		  port_index <= data_in;
-		  // return port type (currently supports only 0=serial)
-		  data_out <= 8'd0;
-	       end else begin
-		  // ... further bytes are subcommand specific
+                  port_cmd <= data_in;
+                  data_out <= 8'd1;            // number of ports
+               end else if(state == 4'd1) begin
+                  port_index <= data_in;
+                  data_out <= 8'd0;            // port type 0 = serial
+               end else begin
+                  if(port_cmd == 8'd0 && port_index == 8'd0) begin
+                     if(state == 4'd2)       data_out <= port_out_available;
+                     else if(state == 4'd3)  data_out <= port_in_available;
+                     else if(state == 4'd4)  data_out <= port_status[31:24];
+                     else if(state == 4'd5)  data_out <= port_status[23:16];
+                     else if(state == 4'd6)  data_out <= port_status[15:8];
+                     else if(state == 4'd7)  data_out <= port_status[7:0];
+                     else                    data_out <= 8'h00;
+                  end
+                  else if(port_cmd == 8'd1 && port_index == 8'd0) begin
+                     data_out <= port_out_data;
+                     port_out_strobe <= data_in[0];
+                  end
+                  else if(port_cmd == 8'd2 && port_index == 8'd0) begin
+                     port_in_data <= data_in;
+                     port_in_strobe <= 1'b1;
+                  end
+               end
+            end
 
-		  // port subcommand 0: get status
-		  if(port_cmd == 8'd0 && port_index == 8'd0) begin
-		     if(state == 4'd2)       data_out <= port_out_available;
-		     else if(state == 4'd3)  data_out <= port_in_available;
-		     // port status for type 0 (serial) is still close to the format
-		     // that was introduced with the first MiST
-		     else if(state == 4'd4)  data_out <= port_status[31:24];  // bitrate[7:0]
-		     else if(state == 4'd5)  data_out <= port_status[23:16];  // bitrate[15:8]
-		     else if(state == 4'd6)  data_out <= port_status[15:8];   // bitrate[23:16]
-		     else if(state == 4'd7)  data_out <= port_status[7:0];    // databits, parity and stopbits
-		     else                    data_out <= 8'h00;
-		  end
-		  
-		  // port subcommand 1: read port data
-		  else if(port_cmd == 8'd1 && port_index == 8'd0) begin
-		     data_out <= port_out_data;
-
-		     // reading the byte ack's the mfp's fifo. Since the
-		     // data arrives with one byte delay at the MCU we need
-		     // to make sure that the last read will not trigger
-		     // another fifo read. The MCU will thus not set bit[0] for
-		     // the last read to suppress the fifo read
-		     port_out_strobe <= data_in[0];
-		  end
-		  
-		  // port subcommand 2: write port data
-		  else if(port_cmd == 8'd2 && port_index == 8'd0) begin
-		     port_in_data <= data_in;
-		     port_in_strobe <= 1'b1;
-		  end
-		  
-	       end
-            end // if (command == 8'd7)
-	   
             // CMD 8: read (menu) config
             if(command == 8'd8) begin
-	       data_out <= menu_rom_data;
-	       menu_rom_addr <= menu_rom_addr + 12'd1;
-	    end
-	   
-	end
-      end // if (data_in_strobe)
+               data_out <= menu_rom_data;
+               menu_rom_addr <= menu_rom_addr + 12'd1;
+            end
+         end
+      end
    end
 end
-    
+
 endmodule

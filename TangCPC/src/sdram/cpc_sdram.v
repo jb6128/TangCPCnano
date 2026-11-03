@@ -70,6 +70,10 @@ module cpc_sdram (
     input               cpu_req,        // impulsion : requête transaction
     input               cpu_we,         // 1 = écriture, 0 = lecture
     output reg          cpu_ack,        // impulsion : transaction terminée
+    // 1 when read data is there (ack) or will be there within <= 4 clk32 cycles:
+    // the CPU already has this much slack between its WAIT sample (T2 falling) and
+    // the data being used (start of T3), so the Z80 need not be stalled for it.
+    output              cpu_data_soon,
 
     // -----------------------------------------------------------------------
     // Port 1 — VRAM (lecture 16 bits, rafraîchissement automatique)
@@ -183,6 +187,13 @@ reg  [21:0] vram_addr_r;  // dernière adresse VRAM servie
 localparam REFRESH_PERIOD = 9'd230;
 reg  [8:0]  refresh_cnt;
 reg         refresh_req;  // rafraîchissement en attente
+// Refresh placement: a refresh (5 cycles) that starts just before the CRTC address
+// changes delays the VRAM read past the moment the Gate Array samples it, and the
+// previous character cell (16 pixels) is displayed ("snow"). So a refresh is started
+// right after a VRAM read (the next one is a full us away); only if it has been
+// pending for 64 cycles (2 us) it is forced.
+reg         ref_ok;       // the last transaction was a VRAM read
+reg  [6:0]  ref_wait;     // cycles the refresh has been pending
 
 // Latches requêtes entrantes (edge detect)
 reg         cpu_req_r;
@@ -199,9 +210,35 @@ reg         boot_we_lat;     // direction sauvegardée
 // Latch cpu_req : même mécanisme que boot — capture le front montant
 // de cpu_req pour ne pas perdre la requête si le SDRAM est occupé.
 reg         cpu_req_lat;
+assign cpu_data_soon = cpu_ack |
+    (do_cpu & ~cur_we & (state == ST_CAS || state == ST_NOP1 || state == ST_NOP2 || state == ST_LATCH));
 reg  [22:0] cpu_addr_lat;
 reg   [7:0] cpu_din_lat;
 reg         cpu_we_lat;
+
+// ---------------------------------------------------------------------------
+// One-word (32 bit) read cache for the CPU port.
+// A SDRAM read takes ~7 clk32 cycles (219 ns); the Z80 samples WAIT 250 ns after
+// MREQ, so nearly every read added a wait state, which knocked the Z80 out of the
+// Gate Array's 1 us slot grid (each extra T state cost up to 4) and made the CPC
+// run ~1.6x too slowly. The SDRAM word fetched by a miss holds 4 consecutive
+// bytes, so sequential opcode fetches mostly hit the cache and are acked at once.
+// Writes by the CPU update the cached word (write-through); writes through the
+// boot port to the cached word invalidate it.
+// ---------------------------------------------------------------------------
+reg         c_valid;
+reg  [20:0] c_tag;
+reg  [31:0] c_data;
+wire        c_hit  = c_valid && (cpu_addr[22:2] == c_tag);
+reg   [7:0] c_byte;
+always @* begin
+    case (cpu_addr[1:0])
+        2'b00: c_byte = c_data[ 7: 0];
+        2'b01: c_byte = c_data[15: 8];
+        2'b10: c_byte = c_data[23:16];
+        default: c_byte = c_data[31:24];
+    endcase
+end
 
 always @(posedge clk) begin
     // Valeurs par défaut
@@ -236,6 +273,9 @@ always @(posedge clk) begin
         do_aref      <= 1'b0;
         cpu_req_r    <= 1'b0;
         cpu_req_lat  <= 1'b0;
+        c_valid      <= 1'b0;
+        ref_ok       <= 1'b0;
+        ref_wait     <= 7'd0;
         boot_req_r   <= 1'b0;
         boot_req_lat <= 1'b0;
         vram_addr_r  <= 22'h3FFFFF; // forcer un fetch VRAM au démarrage (toutes bits à 1)
@@ -292,10 +332,24 @@ always @(posedge clk) begin
 
         // Latch cpu_req : même principe — capture le front montant
         if (cpu_req && !cpu_req_r) begin
-            cpu_req_lat  <= 1'b1;
-            cpu_addr_lat <= cpu_addr;
-            cpu_din_lat  <= cpu_din;
-            cpu_we_lat   <= cpu_we;
+            if (!cpu_we && c_hit) begin
+                // read hit: answer from the cache, no SDRAM transaction
+                cpu_dout <= c_byte;
+                cpu_ack  <= 1'b1;
+            end else begin
+                cpu_req_lat  <= 1'b1;
+                cpu_addr_lat <= cpu_addr;
+                cpu_din_lat  <= cpu_din;
+                cpu_we_lat   <= cpu_we;
+                if (cpu_we && c_hit) begin      // keep the cached word coherent
+                    case (cpu_addr[1:0])
+                        2'b00: c_data[ 7: 0] <= cpu_din;
+                        2'b01: c_data[15: 8] <= cpu_din;
+                        2'b10: c_data[23:16] <= cpu_din;
+                        2'b11: c_data[31:24] <= cpu_din;
+                    endcase
+                end
+            end
         end else if (cpu_ack) begin
             cpu_req_lat  <= 1'b0;
         end
@@ -307,6 +361,10 @@ always @(posedge clk) begin
             // ST_IDLE : arbitrage et démarrage d'un cycle
             // --------------------------------------------------------
             ST_IDLE: begin
+                if (refresh_req) begin
+                    if (ref_wait != 7'd127) ref_wait <= ref_wait + 7'd1;
+                end else
+                    ref_wait <= 7'd0;
                 do_cpu  <= 1'b0;
                 do_boot <= 1'b0;
                 do_vram <= 1'b0;
@@ -316,13 +374,15 @@ always @(posedge clk) begin
                 if (boot_req_lat) begin
                     // Transaction Boot (ROM loading / tape) — via latch persistant
                     do_boot  <= 1'b1;
+                    ref_ok   <= 1'b0;
+                    if (boot_addr_lat[22:2] == c_tag) c_valid <= 1'b0;
                     cur_we   <= boot_we_lat;
                     cur_addr <= boot_addr_lat;
                     cur_din  <= boot_din_lat;
                     sd_cmd   <= CMD_ACTIVE;
                     O_sdram_addr <= boot_addr_lat[20:10]; // ligne
                     O_sdram_ba   <= boot_addr_lat[22:21]; // banque
-                    state    <= ST_RAS;
+                    state    <= ST_CAS;               // tRCD = 1 cycle (31 ns)
 
                 end else if (vram_addr != vram_addr_r) begin
                     // Lecture VRAM : l'adresse a changé
@@ -333,21 +393,23 @@ always @(posedge clk) begin
                     sd_cmd   <= CMD_ACTIVE;
                     O_sdram_addr <= vram_addr[19:9];  // ligne (bits [20:10] de l'adresse byte)
                     O_sdram_ba   <= vram_addr[21:20]; // banque
-                    state    <= ST_RAS;
+                    state    <= ST_CAS;               // tRCD = 1 cycle (31 ns)
 
                 end else if (cpu_req_lat) begin
                     // Transaction CPU — via latch persistant
                     do_cpu   <= 1'b1;
+                    ref_ok   <= 1'b0;
                     cur_we   <= cpu_we_lat;
                     cur_addr <= cpu_addr_lat;
                     cur_din  <= cpu_din_lat;
                     sd_cmd   <= CMD_ACTIVE;
                     O_sdram_addr <= cpu_addr_lat[20:10];  // ligne
                     O_sdram_ba   <= cpu_addr_lat[22:21];  // banque
-                    state    <= ST_RAS;
+                    state    <= ST_CAS;               // tRCD = 1 cycle (31 ns)
 
-                end else if (refresh_req) begin
-                    // Auto-refresh
+                end else if (refresh_req && (ref_ok || ref_wait[6])) begin
+                    // Auto-refresh (right after a VRAM read, or overdue)
+                    ref_ok       <= 1'b0;
                     do_aref      <= 1'b1;
                     refresh_req  <= 1'b0;
                     sd_cmd       <= CMD_AUTO_REFRESH;
@@ -439,10 +501,14 @@ always @(posedge clk) begin
             ST_LATCH: begin
                 // Les données sont présentes sur IO_sdram_dq
                 if (do_vram) begin
+                    ref_ok <= 1'b1;
                     // Lecture 16 bits : prendre D[15:0] ou D[31:16] selon lane
                     // vram_addr[0] = 0 → D[15:0], = 1 → D[31:16]
                     vram_dout <= cur_addr[1] ? IO_sdram_dq[31:16] : IO_sdram_dq[15:0];
                 end else if (do_cpu) begin
+                    c_valid <= 1'b1;                // fill the read cache with the whole word
+                    c_tag   <= cur_addr[22:2];
+                    c_data  <= IO_sdram_dq;
                     case (cur_addr[1:0])
                         2'b00: cpu_dout <= IO_sdram_dq[ 7: 0];
                         2'b01: cpu_dout <= IO_sdram_dq[15: 8];

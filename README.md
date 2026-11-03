@@ -29,7 +29,7 @@ This project is a port of the [Amstrad_MiSTer](https://github.com/MiSTer-devel/A
 - `cpc_flash.v` — ROM loader from flash SPI
 - Pin constraints and timing constraints for Tang Nano 20K
 
-## Current status
+## Initial status (first boot of the port)
 
 The CPC boots from flash ROM and displays the Amstrad 128K prompt (yellow text on blue background) over HDMI. The Z80 executes the OS ROM, programs the CRTC, and shows the command prompt.
 
@@ -44,6 +44,16 @@ The CPC boots from flash ROM and displays the Amstrad 128K prompt (yellow text o
 - Floppy disk controller (directly from SD card)
 - Audio (YM2149 PSG output)
 - OSD menu
+
+## Extensions
+
+The lists above describe the original port at its first boot. Since then the core has been extended and is used on real hardware with the FPGA Companion (RP2040/BL616):
+
+- USB keyboard and DB9 joystick, OSD menu with settings stored in `cpc.ini`
+- Floppy (`.dsk`, drive A/B, AMSDOS), tape playback and **tape recording** (CDT/TZX), 16 upper ROM slots and ROM sets, CPC 664 model (experimental)
+- HDMI with picture position / lock options, exact 32.000 MHz system clock, 15 kHz RGB + CSYNC output, HDMI audio with volume
+
+See **[EXTENSIONS.md](EXTENSIONS.md)** for the feature list, the OSD reference and the known limitations. `TangCPC/PLAN.md` is the original planning document of the upstream project and is kept unchanged.
 
 ## How to build
 

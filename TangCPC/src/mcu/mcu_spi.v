@@ -73,6 +73,26 @@ assign mcu_dout = spi_in_data;
 reg [7:0] spi_target;
 reg [3:0] spi_in_cnt;
 
+// Start-up guard: while the BL616 boots, its SPI pins may float or glitch, which the target would take
+// for transfers (random target, random data: phantom joystick / key press, a corrupted SD mount).
+// Nothing is accepted until chip select has been high (idle) for about 100 us after the power-on
+// reset. A real transfer always starts from idle, so normal operation is not affected.
+reg [1:0]  ss_sync = 2'b00;
+reg [11:0] ss_idle = 12'd0;
+reg        armed   = 1'b0;
+always @(posedge clk) begin
+   ss_sync <= { ss_sync[0], spi_io_ss };
+   if (reset) begin
+      armed   <= 1'b0;
+      ss_idle <= 12'd0;
+   end else if (!ss_sync[1]) begin
+      ss_idle <= 12'd0;                      // chip select low: a transfer (or noise) is running
+   end else if (!armed) begin
+      if (ss_idle == 12'd3200) armed <= 1'b1;
+      else                     ss_idle <= ss_idle + 12'd1;
+   end
+end
+
 always @(posedge clk) begin
    reg [1:0] spi_data_in_readyD;
 
@@ -88,7 +108,7 @@ always @(posedge clk) begin
    else begin
       // parse incoming bit whenever ready toggles
       // if(spi_data_in_readyD == 2'b01) begin
-      if(spi_data_in_readyD[1] ^ spi_data_in_readyD[0]) begin
+      if(armed && (spi_data_in_readyD[1] ^ spi_data_in_readyD[0])) begin
 	 // incoming SPI byte is now in local clock domain
 
 	 // first byte is target id. Else send external trigger

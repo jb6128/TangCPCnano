@@ -115,6 +115,10 @@ logic [23:0] audio_sample_word_packet [3:0] [1:0];
 logic [3:0] audio_sample_word_present_packet;
 
 logic [7:0] frame_counter = 8'd0;
+// next IEC 60958 frame number (+4 per packet, modulo 192); a pure non-blocking update so that
+// yosys-slang accepts it (the original used blocking assignments after a non-blocking one)
+logic [8:0] frame_sum;
+assign frame_sum = {1'b0, frame_counter} + 9'd4;
 int k;
 always_ff @(posedge clk_pixel)
 begin
@@ -124,9 +128,7 @@ begin
     end
     else if (packet_pixel_counter == 5'd31 && packet_type == 8'h02) // Keep track of current IEC 60958 frame
     begin
-        frame_counter = frame_counter + 8'd4;
-        if (frame_counter >= 8'd192)
-            frame_counter = frame_counter - 8'd192;
+        frame_counter <= (frame_sum >= 9'd192) ? frame_sum[7:0] - 8'd192 : frame_sum[7:0];
     end
 end
 audio_sample_packet #(.SAMPLING_FREQUENCY(SAMPLING_FREQUENCY), .WORD_LENGTH({{WORD_LENGTH[0], WORD_LENGTH[1], WORD_LENGTH[2]}, WORD_LENGTH_LIMIT})) audio_sample_packet (.frame_counter(frame_counter), .valid_bit('{2'b00, 2'b00, 2'b00, 2'b00}), .user_data_bit('{2'b00, 2'b00, 2'b00, 2'b00}), .audio_sample_word(audio_sample_word_packet), .audio_sample_word_present(audio_sample_word_present_packet), .header(headers[2]), .sub(subs[2]));

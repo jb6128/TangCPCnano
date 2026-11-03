@@ -39,6 +39,12 @@ module scandoubler
 	// horizontal pixel offset (shifts read position in line buffer)
 	input [HCNT_WIDTH-1:0] h_offset,
 
+	// H lock: the HDMI row grid is free running (aligned once, grid_rst). The phase of the
+	// CPC HSync against that grid is measured on every line and subtracted again, so that
+	// the picture keeps its place relative to HSync like on a monitor that locks to it.
+	input            grid_rst,
+	input            hcomp_en,
+
 	// output interface
 	output reg       hs_out,
 	output reg       vs_out,
@@ -187,6 +193,31 @@ reg [4*3-1:0] sd_buffer_out, sd_bypass_out;
 reg [HCNT_WIDTH-1:0] sd_hcnt;
 reg        hs_sd, vs_sd;
 
+// free running 1024 clk_sys cycles (= one HDMI row); gcnt is 5 at the cycle the HDMI row
+// counter restarts, which is 5 cycles after the HSync edge that triggered grid_rst
+reg  [9:0] gcnt;
+reg        hs_in_d;
+reg  [9:0] gphase;                                    // gcnt at the last input HSync edge
+reg        grid_ok = 1'b0;                            // set by the first grid_rst (before it gcnt means nothing)
+wire [9:0] gcomp = (hcomp_en && grid_ok && hs_max == 10'd1023) ? gphase : 10'd0;
+always @(posedge clk_sys) begin
+	gcnt <= grid_rst ? 10'd5 : gcnt + 1'd1;
+	if(grid_rst) grid_ok <= 1'b1;
+	if(ce_x2 && hs_in_d && !hs_in) gphase <= gcnt;
+end
+always @(posedge clk_sys) hs_in_d <= hs_in;
+
+// Read buffer select. It used to be ~line_toggle, i.e. it switched at the CPC HSync edge, which lies at an
+// arbitrary column phi of the (free running) HDMI row. In the row that contains the HSync edge the part left
+// of phi then came from the previous CPC line and the part right of it from the next one: a horizontal step
+// at column phi (invisible while phi ~ 5, visible when a program moves HSync, e.g. Batman: phi ~ 220).
+// Now the selection follows ~line_toggle only once per HDMI row, at a fixed grid phase in the blank end of
+// the row (gcnt = RD_SWAP, i.e. HDMI column ~ 895 > 800 active columns), so every HDMI row shows one CPC line.
+// (The picture moves down by at most one HDMI row compared with the old behaviour.)
+localparam [9:0] RD_SWAP = 10'd900;
+reg rd_sel = 1'b0;
+always @(posedge clk_sys) if (gcnt == RD_SWAP) rd_sel <= ~line_toggle;
+
 // timing generation runs 32 MHz (twice the input signal analysis speed)
 always @(posedge clk_sys) begin
 	reg hsD;
@@ -204,7 +235,7 @@ always @(posedge clk_sys) begin
 		if(sd_hcnt == hs_rise) hs_sd <= 1;
 
 		// read data from line sd_buffer (h_offset shifts image horizontally)
-		sd_buffer_out <= sd_buffer[{~line_toggle, sd_hcnt + h_offset}];
+		sd_buffer_out <= sd_buffer[{rd_sel, sd_hcnt + h_offset + gcomp}];
 		vs_sd <= vs_in;
 	end
 	if(bypass) begin

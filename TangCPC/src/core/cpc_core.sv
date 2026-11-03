@@ -29,12 +29,53 @@ module cpc_core (
     input           clk32,          // 32 MHz système
     input           flash_clk,      // 100 MHz flash SPI
     input           por,            // Power-on reset (PLL non verrouillée)
+    input           cpu_hold,       // freeze the Z80 (WAIT) while a ROM is written to SDRAM
+    input           cold_boot,      // OSD cold boot: reload the ROMs from flash like at power-up
 
     // Sortie reset CPC
     output          boot_busy,      // 1 = ROMs pas encore chargées → CPU en reset
 
     // SDRAM prête (boot loader attend que SDRAM init soit terminée)
     input           sdram_rdy,
+
+    // Clavier / joysticks depuis le BL616 (mcu_hid -> hid_cpc_matrix)
+    //   ext_key[8*row+bit] = 1 : touche pressée (10 lignes CPC)
+    //   joy1_in/joy2_in    : format hid.sv, actif HAUT (0 = repos)
+    //                        [0]=Right [1]=Left [2]=Down [3]=Up [4]=Fire2 [5]=Fire1 [6]=Fire3
+    input  [79:0]   ext_key,
+    input   [6:0]   joy1_in,
+    input   [6:0]   joy2_in,
+
+    // Reset demandé par l'OSD (sysctrl "R"): 0 = run, 1 = reset, 3 = cold boot
+    input   [1:0]   sys_reset,
+    // OSD "Model": 1 = CPC 664 (664 OS + BASIC, 64 KB RAM). Sampled while the CPC is in reset.
+    input           model664,
+
+    // Cassette : signal lu par le PPI (port B bit 7) et relais moteur (port C bit 4)
+    input           tape_in,
+    output          tape_motor,
+    output          tape_out,       // PPI port C bit 5: cassette write data
+
+    // Audio YM2149 (8 bits non signés)
+    output    [7:0] audio_l,
+    output    [7:0] audio_r,
+
+    // Contrôleur de disquette (u765) <-> couche SD
+    input   [1:0]   fdc_img_mounted,
+    input  [31:0]   fdc_img_size,
+    input   [1:0]   fdc_wprot,
+    input           fdc_fast,
+    output [31:0]   fdc_sd_lba,
+    output  [1:0]   fdc_sd_rd,
+    output  [1:0]   fdc_sd_wr,
+    input           fdc_sd_ack,
+    input   [8:0]   fdc_buff_addr,
+    input   [7:0]   fdc_buff_dout,
+    input           fdc_buff_wr,
+    output  [7:0]   fdc_buff_din,
+    output  [5:0]   fdc_dbg_flags,
+    output  [7:0]   fdc_dbg_msr,
+    output  [5:0]   fdc_dbg_scan,
 
     // Debug : état maximal atteint par le boot loader FSM
     output reg [4:0] dbg_boot_state,
@@ -62,7 +103,7 @@ module cpc_core (
     // ROM map vers Amstrad_motherboard
     // rom_map[N] = 1 si ROM extension N est présente en SDRAM
     // -----------------------------------------------------------------------
-    output [255:0]  rom_map,
+    input  [255:0]  rom_map,
 
     // -----------------------------------------------------------------------
     // Sorties vidéo Amstrad_motherboard (Phase 3b — exposées, Phase 3d actives)
@@ -82,6 +123,7 @@ module cpc_core (
     output          dbg_r7_ok,    // CRTC R7 == 30
     output          dbg_r9_ok,    // CRTC R9 == 7
     output          ga_ready_o,   // GA40010 READY (diagnostic)
+    output reg [15:0] dbg_pc,     // address of the last Z80 opcode fetch (diagnostic)
 
     // -----------------------------------------------------------------------
     // Sorties mémoire Amstrad_motherboard (Phase 3b — exposées, Phase 3c actives)
@@ -99,6 +141,8 @@ module cpc_core (
     output  [7:0]   cpu_dout,
     input   [7:0]   cpu_din,        // données SDRAM → CPU (Phase 3c)
     input           cpu_ack_in,     // SDRAM CPU read/write ack (pour gating READY)
+    input           cpu_soon_in,    // SDRAM read data ready within <= 4 cycles
+    input           wait_gate_en,   // OSD: 1 = Z80 waits for SDRAM data, 0 = never (test only)
 
     // VRAM data : données 16 bits SDRAM → Amstrad_motherboard (Phase 3c)
     input  [15:0]   vram_din_i,
@@ -111,33 +155,34 @@ module cpc_core (
     output reg      wr_rd_ok,       // 1 si test write/read 0xAB réussi
     output reg      wr_rd_done,     // 1 quand le test write/read est terminé
     output reg [7:0] rb_byte,       // valeur brute lue lors du readback ROM
-    output reg [15:0] dbg_first_flash_word  // premier mot flash lu (doit être 0x0189)
+    output reg [15:0] dbg_first_flash_word, // premier mot flash lu (doit être 0x0189)
+    output reg      flash_retry,    // sticky: a flash word differed between two reads (re-read at least once)
+    output reg      flash_err       // sticky: a flash word never gave two equal reads (gave up)
 );
 
 // ---------------------------------------------------------------------------
 // Constantes de la table des segments ROM
 // ---------------------------------------------------------------------------
 // 3 segments, chacun 0x2000 mots (16 KB)
-localparam        N_SEGS     = 3;
+localparam        N_SEGS     = 5;   // 6128 OS, BASIC, AMSDOS + 664 OS, BASIC
 localparam [12:0] LAST_WORD  = 13'd8191; // index du dernier mot (16KB = 8192 mots, indices 0..8191)
 
 // Flash word addresses de début de chaque segment
 localparam [21:0] FLASH_BASE_0 = 22'h100000; // OS ROM    CPC 6128
 localparam [21:0] FLASH_BASE_1 = 22'h102000; // BASIC ROM CPC 6128
 localparam [21:0] FLASH_BASE_2 = 22'h104000; // AMSDOS ROM
+localparam [21:0] FLASH_BASE_3 = 22'h108000; // OS ROM    CPC 664  (boot.rom offset 0x10000)
+localparam [21:0] FLASH_BASE_4 = 22'h10A000; // BASIC ROM CPC 664  (boot.rom offset 0x14000)
 
 // SDRAM byte addresses de début (bank encodé dans [22:21])
 localparam [22:0] SDRAM_BASE_0 = 23'h000000; // lower ROM OS
 localparam [22:0] SDRAM_BASE_1 = 23'h400000; // upper ROM bank 0 (BASIC)
 localparam [22:0] SDRAM_BASE_2 = 23'h41C000; // upper ROM bank 7 (AMSDOS)
+// 664 set in the free RAM pages 0/1 (0x000000..0x01FFFF; CPC RAM starts at 0x020000, see Amstrad_MMU)
+localparam [22:0] SDRAM_BASE_3 = 23'h004000; // 664 lower ROM (OS)
+localparam [22:0] SDRAM_BASE_4 = 23'h008000; // 664 upper ROM 0 (BASIC)
 
-// ---------------------------------------------------------------------------
-// ROM map : AMSDOS présent en slot 7
-// ---------------------------------------------------------------------------
-// AMSDOS désactivé : le FDC (u765) n'est pas encore instancié,
-// AMSDOS boucle en essayant de l'initialiser → bloque le boot avant BASIC
-// Réactiver quand le FDC sera connecté : assign rom_map = 256'h1 << 7;
-assign rom_map = 256'd0;
+// ROM map : fournie par cpc_romload (slots 0 et 7 = flash, 1..31 = ROMs OSD)
 
 // Boot en écriture pendant le chargement, en lecture pendant le readback
 reg boot_we_r;
@@ -150,12 +195,17 @@ assign boot_we = boot_we_r;
 wire         flash_ready;
 wire         flash_busy;
 wire [15:0]  flash_dout;
+// por (clk32 domain) re-synchronised to the flash clock
+reg [1:0] por_fs = 2'b11;
+always @(posedge flash_clk) por_fs <= {por_fs[0], por};
+wire por_f = por_fs[1];
+
 reg  [21:0]  flash_addr;
 reg          flash_cs;
 
 flash flash_inst (
     .clk        ( flash_clk   ),
-    .resetn     ( ~por        ),
+    .resetn     ( ~por_f      ),
     .ready      ( flash_ready ),
     .address    ( flash_addr  ),
     .cs         ( flash_cs    ),
@@ -207,27 +257,37 @@ localparam ST_WR_T_ACK  = 5'd17; // test W/R : attendre ack écriture
 localparam ST_RD_TEST   = 5'd18; // test W/R : relire la même adresse
 localparam ST_RD_T_ACK  = 5'd19; // test W/R : attendre ack lecture
 localparam ST_RD_T_CHK  = 5'd20; // test W/R : comparer
+localparam ST_V_CS      = 5'd21; // verify: read the same flash word again (cs pulse)
+localparam ST_V_HI      = 5'd22; // verify: wait busy=1
+localparam ST_V_LO      = 5'd23; // verify: wait busy=0
+localparam ST_V_CMP     = 5'd24; // verify: two equal reads in a row -> accept, else read again
 
 reg [4:0]  state;
-reg [1:0]  seg;          // 0..2 : index du segment ROM en cours
+reg [2:0]  seg;          // 0..4 : index du segment ROM en cours
 reg [12:0] word_cnt;     // compteur de mots dans le segment courant
 reg [21:0] cur_flash;    // adresse flash courante (mots)
 reg [22:0] cur_sdram;    // adresse SDRAM courante (bytes)
 reg [15:0] word_latch;   // mot flash capturé
 
+reg [3:0] v_cnt;          // re-reads of the current flash word
 reg boot_done_r;
 assign boot_busy = ~boot_done_r;
 
 reg first_latch_captured;  // 1 après capture du premier flash_dout
 
+// Model selection takes effect at a reset only (the ROMs must not change under a running CPU)
+reg model_r = 1'b0;
+always @(posedge clk32) if (~boot_done_r | (|sys_reset)) model_r <= model664;
+
+wire boot_rst = por | cold_boot;
 always @(posedge clk32) begin
     flash_cs <= 1'b0;   // défaut
     boot_req <= 1'b0;   // défaut (impulsion 1 cycle)
 
-    if (por) begin
+    if (boot_rst) begin
         state           <= ST_IDLE;
         boot_done_r     <= 1'b0;
-        seg             <= 2'd0;
+        seg             <= 3'd0;
         word_cnt        <= 13'd0;
         dbg_boot_state  <= 5'd0;
         boot_we_r       <= 1'b1;
@@ -238,6 +298,9 @@ always @(posedge clk32) begin
         rb_byte         <= 8'h00;
         dbg_first_flash_word <= 16'h0000;
         first_latch_captured <= 1'b0;
+        flash_retry     <= 1'b0;
+        flash_err       <= 1'b0;
+        v_cnt           <= 4'd0;
     end else begin
         // Latch état maximum atteint par la FSM (debug)
         if (state > dbg_boot_state)
@@ -258,9 +321,11 @@ always @(posedge clk32) begin
             ST_SEG_INIT: begin
                 word_cnt <= 13'd0;
                 case (seg)
-                    2'd0: begin cur_flash <= FLASH_BASE_0; cur_sdram <= SDRAM_BASE_0; end
-                    2'd1: begin cur_flash <= FLASH_BASE_1; cur_sdram <= SDRAM_BASE_1; end
-                    2'd2: begin cur_flash <= FLASH_BASE_2; cur_sdram <= SDRAM_BASE_2; end
+                    3'd0: begin cur_flash <= FLASH_BASE_0; cur_sdram <= SDRAM_BASE_0; end
+                    3'd1: begin cur_flash <= FLASH_BASE_1; cur_sdram <= SDRAM_BASE_1; end
+                    3'd2: begin cur_flash <= FLASH_BASE_2; cur_sdram <= SDRAM_BASE_2; end
+                    3'd3: begin cur_flash <= FLASH_BASE_3; cur_sdram <= SDRAM_BASE_3; end
+                    3'd4: begin cur_flash <= FLASH_BASE_4; cur_sdram <= SDRAM_BASE_4; end
                     default: ;
                 endcase
                 state <= ST_FLASH_CS;
@@ -301,7 +366,34 @@ always @(posedge clk32) begin
                     dbg_first_flash_word <= flash_dout;
                     first_latch_captured <= 1'b1;
                 end
-                state      <= ST_WR_LO;
+                v_cnt      <= 4'd0;
+                state      <= ST_V_CS;   // every word is read until two reads in a row agree
+            end
+
+            // ST_V_CS / ST_V_HI / ST_V_LO / ST_V_CMP: the flash data is sampled straight from the pin; with a
+            // marginal SPI timing single reads can be wrong. A word is accepted when two consecutive reads
+            // are equal (at most 15 re-reads, then the last value is used and flash_err is set).
+            ST_V_CS: begin
+                flash_addr <= cur_flash;
+                flash_cs   <= 1'b1;
+                state      <= ST_V_HI;
+            end
+            ST_V_HI: if (busy_s) state <= ST_V_LO;
+            ST_V_LO: if (!busy_s) state <= ST_V_CMP;
+            ST_V_CMP: begin
+                if (flash_dout == word_latch) begin
+                    state <= ST_WR_LO;
+                end else begin
+                    flash_retry <= 1'b1;
+                    word_latch  <= flash_dout;
+                    if (v_cnt == 4'd15) begin
+                        flash_err <= 1'b1;
+                        state     <= ST_WR_LO;
+                    end else begin
+                        v_cnt <= v_cnt + 4'd1;
+                        state <= ST_V_CS;
+                    end
+                end
             end
 
             // ----------------------------------------------------------------
@@ -363,7 +455,7 @@ always @(posedge clk32) begin
                 if (seg == N_SEGS - 1)
                     state <= ST_DONE;
                 else begin
-                    seg   <= seg + 2'd1;
+                    seg   <= seg + 3'd1;
                     state <= ST_SEG_INIT;
                 end
             end
@@ -414,7 +506,7 @@ always @(posedge clk32) begin
             // ST_WR_TEST : écrire 0xAB
             // ----------------------------------------------------------------
             ST_WR_TEST: begin
-                boot_addr  <= 23'h000000;  // même adresse que la ROM byte 0
+                boot_addr  <= 23'h7FF000;  // zone libre : ne pas écraser l'OS ROM
                 boot_din   <= 8'hAB;
                 boot_we_r  <= 1'b1;
                 boot_req   <= 1'b1;
@@ -430,7 +522,7 @@ always @(posedge clk32) begin
             // ST_RD_TEST : relire la même adresse
             // ----------------------------------------------------------------
             ST_RD_TEST: begin
-                boot_addr  <= 23'h000000;
+                boot_addr  <= 23'h7FF000;
                 boot_we_r  <= 1'b0;       // mode lecture
                 boot_req   <= 1'b1;
                 state      <= ST_RD_T_ACK;
@@ -487,40 +579,86 @@ end
 // Phase 3b : Amstrad_motherboard — signaux neutres, toujours en reset
 // Phase 3c : connecter SDRAM (cpu_din réel, vram_din réel, reset = ~boot_busy)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Bus de données du Z80 pendant les cycles I/O
+//
+// cpu_din est la sortie du port CPU de la SDRAM : un registre qui garde la
+// dernière lecture mémoire. Le motherboard fait di = crtc_dout & ppi_dout &
+// cpu_din ; pendant un cycle I/O cette valeur périmée polluerait donc la lecture
+// (clavier via PPI/PSG, FDC). Pendant IORQ on remplace cpu_din par le bus
+// d'extension : 0xFF (bus flottant) ou la sortie du FDC.
+// ---------------------------------------------------------------------------
+wire        mb_iorq, mb_rd, mb_wr, mb_m1;
+// last opcode fetch address (shown on the LEDs with S1+S2, to see where a hung Z80 sits)
+always @(posedge clk32) if (mb_m1 & mem_rd) dbg_pc <= cpu_addr;
+wire  [7:0] fdc_dout;
+wire  [7:0] cpu_din_bus = mb_iorq ? fdc_dout : cpu_din;
+
+cpc_fdc fdc_inst (
+    .clk          ( clk32           ),
+    .reset        ( ~boot_done_r | (|sys_reset) ),
+    .iorq         ( mb_iorq         ),
+    .rd           ( mb_rd           ),
+    .wr           ( mb_wr           ),
+    .addr         ( cpu_addr        ),
+    .din          ( cpu_dout        ),
+    .dout         ( fdc_dout        ),
+    .wprot        ( fdc_wprot       ),
+    .fast         ( fdc_fast        ),
+    .img_mounted  ( fdc_img_mounted ),
+    .img_size     ( fdc_img_size    ),
+    .sd_lba       ( fdc_sd_lba      ),
+    .sd_rd        ( fdc_sd_rd       ),
+    .sd_wr        ( fdc_sd_wr       ),
+    .sd_ack       ( fdc_sd_ack      ),
+    .sd_buff_addr ( fdc_buff_addr   ),
+    .sd_buff_dout ( fdc_buff_dout   ),
+    .sd_buff_wr   ( fdc_buff_wr     ),
+    .dbg_flags    ( fdc_dbg_flags   ),
+    .dbg_msr      ( fdc_dbg_msr     ),
+    .dbg_scan     ( fdc_dbg_scan    ),
+    .sd_buff_din  ( fdc_buff_din    ),
+    .motor_o      (                 ),
+    .ready_o      (                 )
+);
+
 Amstrad_motherboard mb (
     // reset : libéré après chargement ROMs (boot_done_r=1 → reset=0)
-    .reset          ( ~boot_done_r  ),
+    .reset          ( ~boot_done_r | (|sys_reset) ),
 
     .clk            ( clk32         ),
     .ce_16          ( ce_16_r       ),
 
     // Joysticks / clavier — entrées neutres
-    .joy1           ( 7'h7F         ),  // aucun bouton pressé
-    .joy2           ( 7'h7F         ),
+    .joy1           ( joy1_in       ),  // actif HAUT (0 = repos), cf. hid.sv
+    .joy2           ( joy2_in       ),
     .right_shift_mod( 1'b0          ),
     .keypad_mod     ( 1'b0          ),
     .ps2_key        ( 11'h0         ),
     .ps2_mouse      ( 25'h0         ),
+    .ext_key        ( ext_key       ),
 
     // Configuration matérielle
     .ppi_jumpers    ( 4'hF          ),  // jumpers standards CPC 6128
     .crtc_type      ( 1'b0          ),  // CRTC type 0
-    .sync_filter    ( 1'b1          ),  // utilise crt_filter (vsync/hsync robuste)
+    .sync_filter    ( 1'b1          ),  // crt_filter (robust vsync/hsync). Test 5a97f8d with 1'b0 (raw GA sync): CSYNC ok, HDMI unchanged, no RGB flicker gain -> kept at 1
     .no_wait        ( 1'b0          ),  // wait states GA40010 actifs
-    .sdram_data_ready( sdram_data_ready ), // gating READY sur données SDRAM
+    .cpu_hold       ( cpu_hold      ),
+    .sdram_data_ready( sdram_data_ready | cpu_soon_in | ~wait_gate_en ), // gating READY sur données SDRAM
 
-    // Cassette — inactive
-    .tape_in        ( 1'b0          ),
+    // Cassette
+    .tape_in        ( tape_in       ),
 
     // VRAM — données depuis SDRAM port VRAM (Phase 3c)
     .vram_din       ( vram_din_i    ),
 
     // ROM map — depuis boot loader
     .rom_map        ( rom_map       ),
-    .ram64k         ( 1'b0          ),  // mode 128 KB
+    .ram64k         ( model_r       ),  // 664: 64 KB (RAM bank switching ignored)
+    .model664       ( model_r       ),  // 664: OS/BASIC from the 664 set
 
     // Bus CPU — données bus tirées haut (tri-state CPC convention)
-    .cpu_din        ( cpu_din       ),
+    .cpu_din        ( cpu_din_bus   ),
 
     // IRQ/NMI — inactifs
     .irq            ( 1'b0          ),
@@ -559,18 +697,18 @@ Amstrad_motherboard mb (
     .key_nmi        (               ),
     .key_reset      (               ),
     .Fn             (               ),
-    .tape_out       (               ),
-    .tape_motor     (               ),
-    .audio_l        (               ),
-    .audio_r        (               ),
+    .tape_out       ( tape_out      ),
+    .tape_motor     ( tape_motor    ),
+    .audio_l        ( audio_l       ),
+    .audio_r        ( audio_r       ),
     .phi_n          (               ),
     .phi_en_n       (               ),
     .phi_en_p       (               ),
-    .iorq           (               ),
+    .iorq           ( mb_iorq       ),
     .mreq           (               ),
-    .rd             (               ),
-    .wr             (               ),
-    .m1             (               ),
+    .rd             ( mb_rd         ),
+    .wr             ( mb_wr         ),
+    .m1             ( mb_m1         ),
     .ga_ready       ( ga_ready_o    ),
     .cursor         (               )
 );

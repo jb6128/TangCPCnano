@@ -6,8 +6,16 @@ module video2hdmi (
 	      
           // video control inputs
           input        vreset,   // top/left pixel reached
+          input  [9:0] v_start,  // row counter value loaded by vreset (vertical picture position)
+          input        cy_arm,   // load the row counter with cy_val at the next row boundary (no reset)
+          input  [9:0] cy_val,
+          output [9:0] cx_o,     // HDMI column / row counter (for the V pos / V lock controller)
+          output [9:0] cy_o,
+          input        load_en,  // show the ROM load progress bar
+          input  [4:0] load_blk, // bar cells filled (0..16)
           input [1:0]  vmode,    // Atari ST video mode
           input [1:0]  screen,   // screen mode (std, overscan, wide)
+          input        fullscreen, // 1: tell the display 16:9 (VIC 18), 0: 4:3 (VIC 17)
 
           input [5:0]  r,
 	  input [5:0]  g,
@@ -57,7 +65,15 @@ hdmi #(
   // video input
   .stmode(vmode),    // current video mode PAL/NTSC/MONO
   .screen(screen),   // adopt to various screen modes (std, overscan, wide)
+  .fullscreen(fullscreen),
   .reset(vreset),    // signal to synchronize HDMI
+  .v_start(v_start),
+  .cy_arm(cy_arm),
+  .cy_val(cy_val),
+  .cx_o(cx_o),
+  .cy_o(cy_o),
+  .load_en(load_en),
+  .load_blk(load_blk),
 
   // Atari STE outputs 4 bits per color. Scandoubler outputs 6 bits (to be
   // able to implement dark scanlines) and HDMI expects 8 bits per color

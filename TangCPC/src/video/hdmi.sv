@@ -38,9 +38,17 @@ module hdmi
     input logic			      clk_audio,
     // synchronous reset back to 0,0
     input logic			      reset,
+    input logic			      cy_arm,   // pulse: at the next row boundary the row counter is loaded with cy_val
+    input logic [9:0]		      cy_val,
+    output logic [9:0]		      cx_o,     // column / row counter, read by the V pos / V lock controller
+    output logic [9:0]		      cy_o,
+    input logic [9:0]		      v_start,  // row counter value loaded by reset (default 568)
     input logic [1:0]		      stmode, // atari st video mode, 0=60hz ntsc, 1=50hz pal, 2=mono
+    input logic			      fullscreen,
     input logic [1:0]		      screen,   // try to adopt to wide (4:3) screens
     input logic [23:0]		      rgb, 
+    input logic			      load_en,  // ROM load progress bar on/off
+    input logic [4:0]		      load_blk, // filled cells 0..16 (25 pixels each)
     input logic [AUDIO_BIT_WIDTH-1:0] audio_sample_word [1:0],
 
     // These outputs go to your HDMI port
@@ -81,9 +89,9 @@ wire [39:0] vtiming0  = {  10'd526, std?10'd480:10'd484,  10'd9,  10'd6 };
 wire [7:0] cea0 = 8'd2; // CEA is HDMI mode in group 1
    
 // PAL     832x576@50hz  aspect 1.44   948x576@50hz
-wire [43:0] htiming1  = { 11'd1024, std?11'd720:11'd832, 11'd24, 11'd72 };  
+wire [43:0] htiming1  = { 11'd1024, std?11'd720:11'd800, 11'd24, 11'd72 };  
 wire [39:0] vtiming1  = {  10'd624, 10'd576,  10'd5,  10'd5 };
-wire [7:0] cea1 = 8'd17;
+wire [7:0] cea1 = fullscreen ? 8'd18 : 8'd17;   // 720x576p50: VIC 17 = 4:3, VIC 18 = 16:9
    
 // MONO    640x400@71hz  aspect 1.6    
 wire [43:0] htiming2  = { 11'd896, 11'd640, 11'd24, 11'd72 };
@@ -122,6 +130,16 @@ assign invert = 2'b11;
 
 reg [10:0] cx;
 reg [9:0] cy;
+reg       cy_pv = 1'b0;     // a row-counter load is pending (applied at the next row boundary)
+reg [9:0] cy_pn;
+// ROM load progress bar (start-up): 400 x 8 px box with a white frame, 16 cells of 25 px filled green.
+wire [10:0] bar_x     = std ? 11'd0 : 11'd40;     // progress bar stays centred in the 800 px window
+wire [10:0] bx        = cx - bar_x;
+wire        bar_box   = bx >= 11'd158 && bx < 11'd562 && cy >= 10'd282 && cy < 10'd294 && cx >= bar_x;
+wire        bar_inner = bx >= 11'd160 && bx < 11'd560 && cy >= 10'd284 && cy < 10'd292 && cx >= bar_x;
+wire [8:0]  bar_fill  = {4'd0, load_blk} * 9'd25;
+wire        bar_on    = bar_inner && ({1'b0, bx} - 12'd160) < {3'd0, bar_fill};
+wire [23:0] rgb_ovl   = !load_en ? rgb : bar_on ? 24'h40FF40 : bar_box ? 24'hFFFFFF : rgb;
 
 always_comb begin
     hsync <= invert[0] ^ (cx >= screen_width + hsync_pulse_start && cx < screen_width + hsync_pulse_start + hsync_pulse_size);
@@ -145,14 +163,22 @@ begin
     if (reset)
     begin
         cx <= 11'd0;
-        cy <= 10'd560;
+        cy <= v_start;
+        cy_pv <= 1'b0;
     end
     else
     begin
         cx <= cx == frame_width-1'b1 ? 11'd0 : cx + 1'b1;
-        cy <= cx == frame_width-1'b1 ? cy == frame_height-1'b1 ? 10'd0 : cy + 1'b1 : cy;
+        if (cy_arm) begin cy_pv <= 1'b1; cy_pn <= cy_val; end
+        if (cx == frame_width-1'b1) begin
+            // a loaded value (V pos / V lock correction) replaces the normal increment, once
+            cy <= cy_pv ? cy_pn : (cy >= frame_height-1'b1 ? 10'd0 : cy + 1'b1);
+            cy_pv <= 1'b0;
+        end
     end
 end
+assign cx_o = cx[9:0];
+assign cy_o = cy;
 
 // See Section 5.2
 logic video_data_period = 0;
@@ -251,13 +277,13 @@ generate
             begin
                 mode <= 3'd2;
                 video_data <= 24'd0;
-                control_data = 6'd0;
+                control_data <= 6'd0;
                 data_island_data <= 12'd0;
             end
             else
             begin
                 mode <= data_island_guard ? 3'd4 : data_island_period ? 3'd3 : video_guard ? 3'd2 : video_data_period ? 3'd1 : 3'd0;
-                video_data <= (cx >= wide_extra_width/2 && cx < (screen_width_real + wide_extra_width/2) && cy < screen_height)?rgb:24'h000000;
+                video_data <= (cx >= wide_extra_width/2 && cx < (screen_width_real + wide_extra_width/2) && cy < screen_height)?rgb_ovl:24'h000000;
                 control_data <= {{1'b0, data_island_preamble}, {1'b0, video_preamble || data_island_preamble}, {vsync, hsync}}; // ctrl3, ctrl2, ctrl1, ctrl0, vsync, hsync
                 data_island_data[11:4] <= packet_data[8:1];
                 data_island_data[3] <= cx != 0;

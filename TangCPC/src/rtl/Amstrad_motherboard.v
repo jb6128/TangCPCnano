@@ -28,6 +28,7 @@ module Amstrad_motherboard
 	input         keypad_mod,
 	input  [10:0] ps2_key,
 	input  [24:0] ps2_mouse,
+	input  [79:0] ext_key,
 	output        joy1_sel,
 	output        joy2_sel,
 	output        key_nmi,
@@ -38,6 +39,7 @@ module Amstrad_motherboard
 	input         crtc_type,
 	input         sync_filter,
 	input         no_wait,
+	input         cpu_hold,          // 1 = freeze the Z80 (WAIT)
 	input         sdram_data_ready,  // 1 quand cpu_dout SDRAM est valide
 
 	input         tape_in,
@@ -68,6 +70,7 @@ module Amstrad_motherboard
 
 	input [255:0] rom_map,
 	input         ram64k,
+	input         model664,     // 1 = 664 ROM set (lower ROM and upper ROM 0 at other SDRAM addresses)
 	output [22:0] mem_addr,
 	output        mem_rd,
 	output        mem_wr,
@@ -117,32 +120,33 @@ wire RFSH_n;
 wire INT_n;
 wire M1_n;
 
+// Port names use the exact case of the VHDL entity (yosys-ghdl is case-sensitive)
 T80pa CPU
 (
-	.reset_n(~reset),
+	.RESET_n(~reset),
 	
-	.clk(clk),
-	.cen_p(phi_en_p),
-	.cen_n(phi_en_n),
+	.CLK(clk),
+	.CEN_p(phi_en_p),
+	.CEN_n(phi_en_n),
 
-	.a(A),
-	.do_z80(D),
-	.di(crtc_dout & ppi_dout & cpu_din),
+	.A(A),
+	.DO_Z80(D),
+	.DI(crtc_dout & ppi_dout & cpu_din),
 
-	.rd_n(RD_n),
-	.wr_n(WR_n),
-	.iorq_n(IORQ_n),
-	.mreq_n(MREQ_n),
-	.m1_n(M1_n),
-	.rfsh_n(RFSH_n),
+	.RD_n(RD_n),
+	.WR_n(WR_n),
+	.IORQ_n(IORQ_n),
+	.MREQ_n(MREQ_n),
+	.M1_n(M1_n),
+	.RFSH_n(RFSH_n),
 
-	.busrq_n(1),
-	.int_n(INT_n & ~irq),
-	.nmi_n(~nmi),
+	.BUSRQ_n(1),
+	.INT_n(INT_n & ~irq),
+	.NMI_n(~nmi),
 	// wait_n: Z80 attend quand low. On attend le GA ready ET que les données SDRAM
 	// soient prêtes pour les lectures mémoire (mem_rd = ~RD_n & ~MREQ_n).
 	// Pour les écritures et les IO, seul le GA ready suffit.
-	.wait_n((ready & (sdram_data_ready | RD_n | MREQ_n)) | (IORQ_n & MREQ_n) | no_wait)
+	.WAIT_n(((ready & (sdram_data_ready | RD_n | MREQ_n)) | (IORQ_n & MREQ_n) | no_wait) & ~cpu_hold)
 );
 
 wire crtc_hs, crtc_vs, crtc_de;
@@ -281,6 +285,7 @@ Amstrad_MMU MMU
 	.CLK(clk),
 	.reset(reset),
 	.ram64k(ram64k),
+	.model664(model664),
 	.romen_n(romen_n),
 	.rom_map(rom_map),
 	.A(A),
@@ -357,6 +362,8 @@ hid HID
 
 	.joystick1(joy1),
 	.joystick2(joy2),
+
+	.ext_key(ext_key),
 
 	.Y(portC[3:0]),
 	.X(kbd_out),

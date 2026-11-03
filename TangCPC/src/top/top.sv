@@ -4,7 +4,7 @@
 
     Cible : GOWIN GW2AR-18C (Tang Nano 20K)
     Horloge entrée : 27 MHz (pin 4)
-    Génère : clk32 (32 MHz système), flash_clk (100 MHz SPI)
+    Génère : clk32 (32.000 MHz système), flash_clk (96 MHz SPI)
 */
 
 module top (
@@ -19,7 +19,6 @@ module top (
     // UART BL616 intégré
     input           uart_rx,
     output          bl616_mon_tx,
-    input           bl616_mon_rx,
 
     // Flash SPI
     output          mspi_cs,
@@ -42,8 +41,16 @@ module top (
     output [3:0]    O_sdram_dqm,
 
     // GPIO — joystick DB9 / souris
-    input  [5:0]    io,
-    input  [5:0]    spare,
+    input  [5:0]    io,        // DB9 joystick: BTN0, DOWN, UP, RIGHT, LEFT, BTN1 (pins 27,28,25,26,29,30)
+    input           spare_rx,   // pin 31: UART RX from the RP2040 (Pico) keyboard companion
+
+    // Analog-style 15 kHz video out as on the real CPC (2 bits per colour + composite sync).
+    // Per colour: pin1 = level>=half, pin0 = level==full; both pins through equal resistors
+    // into one node give 0 / 1/2 / 1 of full scale.  csync is active low.
+    inout  [1:0]    rgb_r,      // high-Z when the OSD option 'RGB out' is Off (pins can then be used
+    inout  [1:0]    rgb_g,      // for something else, e.g. a joystick 2 wired like in other projects)
+    inout  [1:0]    rgb_b,
+    inout           csync,
 
     // Interface MCU externe BL616 / M0S Dock
     // m0s[0] = spi_dout (out), m0s[1..3] = din/ss/clk (in)
@@ -79,23 +86,92 @@ assign bl616_mon_tx = uart_rx;
 
 // ---------------------------------------------------------------------------
 // PLLs
-//   pll_160m : 27 MHz → 160 MHz (HDMI TMDS)
-//              via CLKDIV /5 → 32 MHz (clk32 système)
-//   flash_pll: 27 MHz → 100 MHz (flash SPI)
+//   flash_pll: 27 MHz * 32 / 9 → 96 MHz (flash SPI; also the input of pll_160m)
+//   pll_160m : 96 MHz * 5 / 3 → 160.000 MHz (HDMI TMDS), exact
+//              via CLKDIV /5 → 32.000 MHz (clk32 système)
+//   (until 0ce5820: 27 MHz * 53 / 9 = 159 MHz → clk32 = 31.8 MHz, 0.625 % too slow)
 // ---------------------------------------------------------------------------
 wire clk160;
 wire clk32;
 wire flash_clk;
-wire flash_clk_shifted;     // 100 MHz + 22.5° → mspi_clk (timing SPI correct)
+wire flash_clk_shifted;     // 96 MHz + 22.5° → mspi_clk (timing SPI correct)
 wire pll_lock_hdmi;
+wire  [5:0] fdc_dbg_flags;   // debug LEDs (S1)
+wire  [7:0] fdc_dbg_msr;     // debug LEDs (S2)
+wire  [5:0] fdc_dbg_scan;
+
+// Sorties mémoire Amstrad_motherboard (Phase 3c : connectées à SDRAM)
+wire [22:0] core_mem_addr;
+wire        core_mem_rd;
+wire        core_mem_wr;
+wire        core_romen;
+wire [14:0] core_vram_addr;
+
+// Bus CPU Amstrad_motherboard (Phase 3c)
+wire [15:0] core_cpu_addr;
+wire  [7:0] core_cpu_dout;
+
+// Signaux de cpc_core (déclarés ici : utilisés par le mux du port Boot)
+wire        boot_busy_w;
+wire [3:0]  core_dbg_boot_state;
+wire [22:0] core_boot_addr;
+wire  [7:0] core_boot_din;
+wire  [7:0] core_boot_dout;
+wire        core_boot_req;
+wire        core_boot_we;
+wire        core_boot_ack;
+wire [255:0] core_rom_map;
+
+// Sorties vidéo Amstrad_motherboard (Phase 3d : connectées à HDMI)
+wire [1:0]  core_red;
+wire [1:0]  core_green;
+wire [1:0]  core_blue;
+wire        core_hsync;
+wire        core_vsync;
+wire        core_hblank;
+wire        core_vblank;
+wire        core_field;
+wire        core_crtc_vs_raw;
+wire        core_dbg_r0_ok, core_dbg_r4_ok, core_dbg_r7_ok, core_dbg_r9_ok;
+wire        core_ga_ready;
+wire [15:0] core_dbg_pc;
+wire [1:0]  core_mode;
+wire        core_readback_ok;
+wire        core_readback_done;
+wire        core_wr_rd_ok;
+wire        core_wr_rd_done;
+wire [7:0]  core_rb_byte;
+wire [15:0] core_dbg_first_flash;
+wire        core_flash_retry, core_flash_err;   // boot loader: flash word needed a re-read / never verified
+
 wire pll_lock_flash;
 wire pll_lock = pll_lock_hdmi && pll_lock_flash;
-wire por      = !pll_lock;   // Power-On Reset : actif tant que PLLs non verrouillées
+// Power-On Reset: active while the PLLs are unlocked and for 2^16 clk32 cycles (2 ms)
+// after they lock. The lock signals are asynchronous to clk32; using them directly
+// released the reset at a different clk32 edge for different registers, and the SDRAM
+// needs a stable clock for >= 100-200 us before its init sequence. Release is therefore
+// synchronised and delayed. (clk32 itself only runs while pll_lock_hdmi is high.)
+reg [1:0]  por_lock_s = 2'b00;
+reg [15:0] por_cnt    = 16'd0;
+reg        por_r      = 1'b1;
+always @(posedge clk32) begin
+    por_lock_s <= {por_lock_s[0], pll_lock};
+    if (!por_lock_s[1]) begin
+        por_cnt <= 16'd0;
+        por_r   <= 1'b1;
+    end else if (por_cnt != 16'hFFFF) begin
+        por_cnt <= por_cnt + 16'd1;
+    end else begin
+        por_r   <= 1'b0;
+    end
+end
+wire por = por_r;
 
 pll_160m pll_hdmi_inst (
     .clkout ( clk160        ),
     .lock   ( pll_lock_hdmi ),
-    .clkin  ( clk           )
+    .clkin  ( flash_clk     ),     // 96 MHz from flash_pll
+    .reset  ( ~pll_lock_flash )    // wait until the 96 MHz input is stable
 );
 
 Gowin_CLKDIV clkdiv_inst (
@@ -105,8 +181,8 @@ Gowin_CLKDIV clkdiv_inst (
 );
 
 flash_pll pll_flash_inst (
-    .clkout  ( flash_clk         ),  // 100 MHz — logique flash
-    .clkoutp ( flash_clk_shifted ),  // 100 MHz +22.5° — horloge SPI physique
+    .clkout  ( flash_clk         ),  // 96 MHz — logique flash
+    .clkoutp ( flash_clk_shifted ),  // 96 MHz +22.5° — horloge SPI physique
     .lock    ( pll_lock_flash    ),
     .clkin   ( clk               )
 );
@@ -123,12 +199,24 @@ assign m0s_0    = spi_io_dout;
 // m0s_4 (spi_intn → pin 51) retiré en Phase 0 (conflit bank GOWIN, à résoudre Phase 6)
 assign spi_irqn = spi_intn;
 
+// The SPI source starts on the internal BL616 pins and switches (for good, until the next power-on
+// reset) to the external pins (RP2040 / M0S Dock) when the external chip select first goes low.
+// Until then, and at the moment of the switch, whatever the internal pins do (floating or noisy while
+// the BL616 boots) can be taken for an SPI transfer; a stray joystick transfer would leave
+// "joystick right" set for good. At the switch (`spi_sw`, one clk32 pulse) the HID state is therefore
+// cleared and mcu_spi waits for the chip select to be idle again before it accepts data.
 reg spi_ext;
+reg spi_sw = 1'b0;
+reg [1:0] m0s_2_s = 2'b11;
 always @(posedge clk32) begin
+    m0s_2_s <= { m0s_2_s[0], m0s_2 };
+    spi_sw  <= 1'b0;
     if (por)
         spi_ext <= 1'b0;
-    else if (m0s_2 == 1'b0)
+    else if (!spi_ext && m0s_2_s == 2'b00) begin
         spi_ext <= 1'b1;
+        spi_sw  <= 1'b1;
+    end
 end
 
 wire spi_io_din = spi_ext ? m0s_1 : spi_dat;
@@ -168,15 +256,28 @@ reg [24:0] vsync_cnt;
 wire vsync_pulse;
 reg  vsync_r;
 always @(posedge clk32) begin
+
     vsync_r <= core_crtc_vs_raw;
     if (core_crtc_vs_raw && !vsync_r)
         vsync_cnt <= vsync_cnt + 1;
 end
 
+// CPC alive: retriggerable ~100 ms timeout, restarted by every CRTC VSync (50 Hz -> steady on;
+// goes off when the CRTC/CPU stops). Used for LED5.
+reg [21:0] alive_to = 22'd0;
+wire       cpc_alive = (alive_to != 22'd0);
+always @(posedge clk32) begin
+    if (core_crtc_vs_raw && !vsync_r) alive_to <= 22'd3200000;
+    else if (alive_to != 22'd0)       alive_to <= alive_to - 22'd1;
+end
+
 // h_offset : décalage horizontal dans le line buffer scandoubler
 // Valeur calibrée visuellement via les boutons S1/S2 (voir ci-dessous)
-localparam [9:0] H_OFFSET = 10'd320;
-wire [9:0] h_offset_reg = H_OFFSET;
+wire  [3:0] sys_hpos;   // OSD "H pos"
+wire        sys_w800;   // OSD "Width": 1 = 800 px HDMI active width (80 px wider than 720 = the visible part of a CPC line; start 40 px earlier)
+// horizontal picture position: OSD "H pos", v = 0..15 shown as -8..+7 (plain unsigned value, the label is
+// only text). offset = 160 + 32*(v-8) = -96 + 32*v (mod 1024); default v=8 = 0 = offset 160, the centred picture.
+wire [9:0] h_offset_reg = 10'd928 + {1'b0, sys_hpos, 5'b00000} - (sys_w800 ? 10'd40 : 10'd0);
 
 // --- Mode calibration horizontale (décommenter pour ajuster H_OFFSET) ---
 // Utilise S1 (+32 pixels) et S2 (-32 pixels) pour décaler l'image en temps réel.
@@ -218,7 +319,8 @@ wire [9:0] h_offset_reg = H_OFFSET;
 // end
 // assign leds_n = ~h_offset_reg[9:4];  // remplace l'assign LEDs CRTC
 
-assign leds_n = {
+// FDC debug: S1 held -> activity flags, S2 held -> scan state / MSR bit 7 (see the leds_n mux below)
+wire [5:0] led_crtc = {
     ~core_dbg_r0_ok,            // [5]
     ~core_dbg_r4_ok,            // [4]
     ~core_dbg_r7_ok,            // [3]
@@ -226,6 +328,42 @@ assign leds_n = {
     ~vsync_cnt[4],              // [1] ~1.6 Hz si 50 Hz vsync
     ~core_readback_ok           // [0] ROM OK
 };
+// S1 + S2 together: address of the last opcode fetch, one snapshot every 4 s:
+//   1 s all LEDs on (marker), then PC[15:10], PC[9:4], {PC[3:0],00}, 1 s each (lit = 1)
+reg [26:0] pcshow_cnt;
+reg [15:0] pcshow_snap;
+always @(posedge clk32) begin
+    pcshow_cnt <= pcshow_cnt + 27'd1;
+    if (pcshow_cnt[26:25] == 2'd0) pcshow_snap <= core_dbg_pc;   // frozen for the other 3 steps
+end
+reg [5:0] pcshow_leds;
+always @* begin
+    case (pcshow_cnt[26:25])
+        2'd0:    pcshow_leds = 6'b111111;
+        2'd1:    pcshow_leds = pcshow_snap[15:10];
+        2'd2:    pcshow_leds = pcshow_snap[9:4];
+        default: pcshow_leds = {pcshow_snap[3:0], 2'b00};
+    endcase
+end
+reg  disc_led = 1'b0, tape_led = 1'b0, rom_led = 1'b0;   // driven below, after the FDC/tape wires
+reg  tape_rec_ind = 1'b0;           // LED4: SAVE recording in progress / failed
+reg  bl616_seen = 1'b0, pico_seen = 1'b0; // diagnostics: a key from this source was seen since power-on (together on LED4)
+wire db9_any = (io != 6'b111111);   // any DB9 line low
+// Static start-up diagnostics, sticky since the power-on reset (lit = 1), see the block at the end of this file:
+//   S2 held        : dbg_mnt = ROM-set mount path   (LED0 set mount pulse seen, LED1 set mount with size > 0,
+//                    LED2 disk A mounted with size > 0, LED3 ROM-set load started, LED4 second set mount pulse,
+//                    LED5 external SPI source active)
+//   S1 + S2 held   : dbg_inp = input sources        (LED0 DB9 RIGHT low seen while the cold reset was held, LED1 DB9 RIGHT
+//                    low seen after the reset release, LED2 DB9 any, LED3 companion key, LED4 Pico-UART key,
+//                    LED5 companion cursor-right key; all "seen since power-on")
+//   S1 held        : dbg_db9 = DB9 lines seen low since power-on (after the start-up protection and the 2 ms
+//                    stability filter, i.e. what reaches the CPC): LED0 BTN0, 1 DOWN, 2 UP, 3 RIGHT, 4 LEFT, 5 BTN1
+reg  [5:0] dbg_mnt = 6'd0, dbg_inp = 6'd0, dbg_db9 = 6'd0;
+assign leds_n = (user & reset) ? ~{dbg_inp[5], core_flash_err, core_flash_retry, dbg_inp[2:0]} :   // S1+S2: LED3 flash word re-read, LED4 flash word never verified (replace the key flags)
+                user  ? ~dbg_db9 :
+                reset ? ~dbg_mnt :
+                db9_any ? io :        // DB9 test: LED lit = pin pulled low. 0=BTN0 1=DOWN 2=UP 3=RIGHT 4=LEFT 5=BTN1
+                        ~{cpc_alive, tape_rec_ind, rom_led, tape_led, disc_led, sys_amsdos};   // normal: LED0 AMSDOS On, LED1 disc, LED2 tape, LED3 ROM loading, LED4 tape recording (solid) / recording failed (blinking), LED5 CPC alive (steady while CRTC VSync runs)
 assign ws2812 = 1'b0;
 
 // ---------------------------------------------------------------------------
@@ -238,6 +376,7 @@ wire  [7:0] cpu_dout_w;     // données SDRAM → Z80 (pour lectures)
 wire        cpu_req_w;      // requête (impulsion front montant)
 wire        cpu_we_w;       // 1 = écriture
 wire        cpu_ack_w;
+wire        cpu_soon_w;
 
 // Port VRAM : adresse CRTC → mot 16-bit depuis SDRAM
 wire [21:0] vram_addr_w;    // adresse 22-bit (mot 16-bit dans SDRAM)
@@ -264,14 +403,17 @@ assign cpu_we_w    = core_mem_wr;
 wire [15:0] core_vram_din = vram_dout_w;
 
 // Signaux port Boot → pilotés par cpc_core (Phase 2)
-// core_boot_dout et core_boot_ack déclarés ici pour éviter usage avant déclaration
-wire  [7:0] core_boot_dout;
-wire        core_boot_ack;
-wire [22:0] boot_addr_w = core_boot_addr;
-wire  [7:0] boot_din_w  = core_boot_din;
+// Le port Boot est partagé : boot loader de cpc_core jusqu'à la fin de son
+// auto-test (wr_rd_done), ensuite cpc_romload (ROMs externes, Étape 3).
+wire        rl_sel = core_wr_rd_done;
+wire [22:0] rl_addr;
+wire  [7:0] rl_din;
+wire        rl_req;
+wire [22:0] boot_addr_w = rl_sel ? rl_addr : core_boot_addr;
+wire  [7:0] boot_din_w  = rl_sel ? rl_din  : core_boot_din;
 wire  [7:0] boot_dout_w;
-wire        boot_req_w  = core_boot_req;
-wire        boot_we_w   = core_boot_we;
+wire        boot_req_w  = rl_sel ? rl_req  : core_boot_req;
+wire        boot_we_w   = rl_sel ? 1'b1    : core_boot_we;
 wire        boot_ack_w;
 assign core_boot_dout = boot_dout_w;
 assign core_boot_ack  = boot_ack_w;
@@ -302,6 +444,7 @@ cpc_sdram sdram_inst (
     .cpu_req       ( cpu_req_w     ),
     .cpu_we        ( cpu_we_w      ),
     .cpu_ack       ( cpu_ack_w     ),
+    .cpu_data_soon ( cpu_soon_w    ),
 
     // Port VRAM
     .vram_addr     ( vram_addr_w   ),
@@ -325,54 +468,228 @@ assign mspi_clk = flash_clk_shifted;
 // ---------------------------------------------------------------------------
 // cpc_core — Boot loader ROM + Amstrad_motherboard (Phase 3b)
 // ---------------------------------------------------------------------------
-wire        boot_busy_w;
-wire [3:0]  core_dbg_boot_state;
-wire [22:0] core_boot_addr;
-wire  [7:0] core_boot_din;
-wire  [7:0] core_boot_dout;
-wire        core_boot_req;
-wire        core_boot_we;
-wire        core_boot_ack;
-wire [255:0] core_rom_map;
 
-// Sorties vidéo Amstrad_motherboard (Phase 3d : connectées à HDMI)
-wire [1:0]  core_red;
-wire [1:0]  core_green;
-wire [1:0]  core_blue;
-wire        core_hsync;
-wire        core_vsync;
-wire        core_hblank;
-wire        core_vblank;
-wire        core_field;
-wire        core_crtc_vs_raw;
-wire        core_dbg_r0_ok, core_dbg_r4_ok, core_dbg_r7_ok, core_dbg_r9_ok;
-wire        core_ga_ready;
-wire [1:0]  core_mode;
-wire        core_readback_ok;
-wire        core_readback_done;
-wire        core_wr_rd_ok;
-wire        core_wr_rd_done;
-wire [7:0]  core_rb_byte;
-wire [15:0] core_dbg_first_flash;
 
-// Sorties mémoire Amstrad_motherboard (Phase 3c : connectées à SDRAM)
-wire [22:0] core_mem_addr;
-wire        core_mem_rd;
-wire        core_mem_wr;
-wire        core_romen;
-wire [14:0] core_vram_addr;
+// Clavier / joysticks BL616 (pilotés plus bas par mcu_hid / hid_cpc_matrix)
+wire        rom_busy;
+wire        rom_restore;
+wire  [1:0] sys_reset_w;
+// While a ROM file is written to SDRAM the Z80 is only frozen (cpu_hold, via WAIT);
+// CRTC and Gate Array keep running, so the HDMI picture and the OSD stay stable.
+// When the load is done the CPC gets a 10 ms reset pulse, like the OSD Reset, so
+// the firmware rescans the upper ROMs and the video sync (vreset) is re-aligned.
+// A ROM load only freezes the Z80 (cpu_hold = rom_busy); there is no reset any more. A new ROM is
+// found by the firmware at the next reset, which the user triggers from the OSD when wanted.
+// OSD "Model" (6128/664): a change of the setting triggers a reset of ~32 ms so that the other ROM
+// set is used immediately (the core samples the model while it is in reset).
+wire        sys_model664;
+reg         model_d = 1'b0;
+reg  [20:0] model_rst_cnt = 21'd0;
+always @(posedge clk32) begin
+    model_d <= sys_model664;
+    if (model_d != sys_model664)    model_rst_cnt <= 21'h1FFFFF;
+    else if (model_rst_cnt != 21'd0) model_rst_cnt <= model_rst_cnt - 21'd1;
+end
+wire        model_rst = (model_rst_cnt != 21'd0);
+// ROM load during start-up: while a load runs before the CPC picture has been aligned once since the
+// last reset (vreset_done = 0: cold boot / power-on with a ROM set from cpc.ini, or a load right after
+// an OSD reset) the CPC is held in reset instead of only being frozen. Otherwise the Z80 stops in the
+// middle of the firmware start-up (garbage screen, PSG/tape tone, CRTC not yet programmed) and the
+// HDMI alignment (vreset) is taken with the wrong CRTC timing (vertical offset). The CPC is released
+// when the load is done, so the firmware finds the new ROMs at its first start. Loads from the OSD
+// while the CPC runs (vreset_done = 1) still only freeze the Z80.
+reg         vreset_done;    // declared here; driven in the vreset block below
+wire        rom_rst     = rom_busy & ~vreset_done;
+wire  [1:0] cpc_reset_w = sys_reset_w | {1'b0, model_rst} | {1'b0, rom_rst};
+wire        cpc_in_reset = (|cpc_reset_w) | boot_busy_w;
+// The 8255 outputs port C = 0xFF in reset (mode 0x9B, ports are inputs), i.e. tape motor 'on'. Without
+// this gate the mounted tape starts playing (pilot tone, tape position moves) during every reset.
+wire        tape_motor_run = tape_motor_w & ~cpc_in_reset;
+wire  [4:0] rom_prog;
+wire        cold_w      = sys_reset_w[1];            // OSD "Cold boot" (R=3) or "Factory boot" (R=2)
+wire        factory_w   = (sys_reset_w == 2'b10);   // OSD "Factory boot": also forget the ROM files
+wire  [1:0] sys_floppy_wprot;
+wire        sys_fdc_fast;
+wire  [4:0] sys_rom_slot;
+wire        sys_rom_clear;
+wire        sys_rom_clearset;
+wire        sys_amsdos;
+wire        sys_waitgate;
+wire        sys_hlock;
+wire        sys_mono;
+wire        sys_tapesnd;
+wire  [2:0] sys_volume;
+wire  [3:0] sys_vpos;
+wire        sys_vlock;
+wire  [2:0] sys_vrate;                      // OSD "V rate": 1 << value rows per frame
+wire        vreset_any;                 // = vreset_pulse (full HDMI re-alignment; 'V pos' only loads the row counter, see below)
+wire        sys_rgbout;
+wire        sys_firesw;
+wire        sys_wide;
+wire        sys_tape_inv;
+wire  [7:0] core_audio_l, core_audio_r;
+wire  [1:0] sys_leds;
+wire [23:0] sys_color;
+wire        sys_int_n;
+wire  [7:0] sys_int_ack;
+wire        sdc_int;
 
-// Bus CPU Amstrad_motherboard (Phase 3c)
-wire [15:0] core_cpu_addr;
-wire  [7:0] core_cpu_dout;
+wire [31:0] sd_img_size;
+wire  [7:0] sd_img_mounted;
+
+// ---------------------------------------------------------------------------
+// Deferred disk / tape mounts (2026-10-31, experiment)
+// While the companion mounts the images of cpc.ini (machine held in cold reset, R=3) the u765 starts
+// scanning the disk image directly on the SD card (direct mode) and the tape loader prefetches, i.e. the
+// core and the companion use the SD card at the same time. Hardware result 2026-10-31: with only drive4
+// in cpc.ini the ROM set was always mounted, with drive0 / drive2 as well it usually was not.
+// Mount pulses of images 0..2 that arrive while the cold reset is held are therefore stored (with their
+// size) and replayed one after the other when the reset is released. Mounts at any other time (OSD,
+// machine running) pass through unchanged.
+// ---------------------------------------------------------------------------
+wire        mnt_defer   = cold_w;
+reg         mnt_defer_d = 1'b1;
+reg  [2:0]  mnt_pend    = 3'd0;
+reg  [31:0] mnt_sz0 = 32'd0, mnt_sz1 = 32'd0, mnt_sz2 = 32'd0;
+reg         rp_act      = 1'b0;
+reg  [1:0]  rp_idx      = 2'd0;
+reg  [3:0]  rp_cnt      = 4'd0;
+reg  [2:0]  rp_pulse    = 3'd0;
+reg  [31:0] rp_size     = 32'd0;
+wire  [1:0] fdc_mnt     = mnt_defer ? 2'b00 : (rp_act ? rp_pulse[1:0] : sd_img_mounted[1:0]);
+wire        tape_mnt    = mnt_defer ? 1'b0  : (rp_act ? rp_pulse[2]   : sd_img_mounted[2]);
+wire [31:0] mnt_size    = rp_act ? rp_size : sd_img_size;
+
+always @(posedge clk32) begin
+    mnt_defer_d <= mnt_defer;
+    rp_pulse    <= 3'd0;
+    if (por) begin
+        mnt_pend <= 3'd0;
+        rp_act   <= 1'b0;
+        rp_idx   <= 2'd0;
+        rp_cnt   <= 4'd0;
+    end else begin
+        // store the mounts that arrive while the cold reset is held (the last one of an image wins)
+        if (mnt_defer) begin
+            if (sd_img_mounted[0]) begin mnt_pend[0] <= 1'b1; mnt_sz0 <= sd_img_size; end
+            if (sd_img_mounted[1]) begin mnt_pend[1] <= 1'b1; mnt_sz1 <= sd_img_size; end
+            if (sd_img_mounted[2]) begin mnt_pend[2] <= 1'b1; mnt_sz2 <= sd_img_size; end
+        end
+        // reset released: replay them, one pulse every 9 clk32 cycles
+        if (mnt_defer_d && !mnt_defer) begin
+            rp_act <= 1'b1;
+            rp_idx <= 2'd0;
+            rp_cnt <= 4'd0;
+        end else if (rp_act) begin
+            if (rp_cnt == 4'd0) begin
+                if (rp_idx == 2'd3) rp_act <= 1'b0;
+                else if (mnt_pend[rp_idx]) begin
+                    rp_pulse[rp_idx] <= 1'b1;
+                    rp_size          <= (rp_idx == 2'd0) ? mnt_sz0 : (rp_idx == 2'd1) ? mnt_sz1 : mnt_sz2;
+                    mnt_pend[rp_idx] <= 1'b0;
+                    rp_cnt           <= 4'd1;
+                end else
+                    rp_idx <= rp_idx + 2'd1;
+            end else if (rp_cnt == 4'd8) begin
+                rp_idx <= rp_idx + 2'd1;
+                rp_cnt <= 4'd0;
+            end else
+                rp_cnt <= rp_cnt + 4'd1;
+        end
+    end
+end
+wire [31:0] fdc_lba;
+wire  [1:0] fdc_rd, fdc_wr;
+wire  [2:0] sd_rsrc;
+wire        sd_rbusy, sd_rdone;
+wire        sd_outen;
+wire  [8:0] sd_outaddr;
+wire  [7:0] sd_outbyte;
+wire  [7:0] fdc_wr_data;
+
+wire        tape_motor_w, tape_out_w, tape_in_w, tape_present;
+wire        tape_rec_led;
+wire  [2:0] tape_rec_err;
+wire        tape_rec_rd, tape_rec_wr;
+wire [31:0] tape_rec_lba;
+wire  [7:0] tape_rec_data;
+wire        tape_rd;
+wire [31:0] tape_lba;
+wire  [7:0] arb_rstart, arb_wstart;
+wire [31:0] arb_rsector;
+wire        grant_fdc, grant_tape, grant_rec, grant_rom;
+wire        sys_tape_prot;
+
+// Activity LEDs (normal display): disc = SD sector transfer for the FDC (stretched ~130 ms),
+// tape = tape motor on while a tape image is mounted.
+// LED4 error code: <code> blinks (0.2 s on, 0.2 s off each), then 1 s pause
+reg [22:0] bl_t = 23'd0;
+reg  [4:0] bl_p = 5'd0;
+wire [4:0] bl_len = {tape_rec_err, 1'b0} + 5'd5;   // 2 ticks per blink + 5 ticks pause
+always @(posedge clk32) begin
+    if (tape_rec_err == 3'd0) begin bl_t <= 23'd0; bl_p <= 5'd0; end
+    else if (bl_t == 23'd6_399_999) begin
+        bl_t <= 23'd0;
+        bl_p <= (bl_p + 5'd1 >= bl_len) ? 5'd0 : bl_p + 5'd1;
+    end else bl_t <= bl_t + 23'd1;
+end
+reg [21:0] disc_hold = 22'd0;
+reg [21:0] rom_hold  = 22'd0;     // ROM / ROM set load shown on LED4 (stretched ~130 ms)
+always @(posedge clk32) begin
+    if (rom_busy)                rom_hold <= 22'h3FFFFF;
+    else if (rom_hold != 22'd0)  rom_hold <= rom_hold - 22'd1;
+end
+always @(posedge clk32) begin
+    if ((|fdc_rd) | (|fdc_wr) | (sd_rbusy & grant_fdc)) disc_hold <= 22'h3FFFFF;
+    else if (disc_hold != 22'd0)                         disc_hold <= disc_hold - 22'd1;
+    disc_led <= (disc_hold != 22'd0);
+    tape_led <= tape_motor_w & tape_present;
+    rom_led  <= (rom_hold != 22'd0);
+    tape_rec_ind <= tape_rec_led | ((tape_rec_err != 3'd0) & ~bl_p[0] & (bl_p < {tape_rec_err, 1'b0}));
+end
+wire        rom_rd;
+wire        rom_set;
+wire [31:0] rom_lba;
+wire [79:0] cpc_ext_key;
+wire  [6:0] cpc_joy1;
+wire  [6:0] cpc_joy2;
 
 cpc_core core_inst (
     .clk32      ( clk32              ),
     .flash_clk  ( flash_clk         ),
     .por        ( por                ),
+    .cold_boot       ( cold_w | rom_restore  ),
+    .cpu_hold        ( rom_busy              ),
     .boot_busy       ( boot_busy_w           ),
     .sdram_rdy       ( sdram_ready           ),
     .dbg_boot_state  ( core_dbg_boot_state   ),
+    // Clavier / joysticks BL616
+    .ext_key         ( cpc_ext_key           ),
+    .joy1_in         ( cpc_joy1              ),
+    .joy2_in         ( cpc_joy2              ),
+    // Disquettes (Étape 1)
+    .sys_reset       ( cpc_reset_w           ),
+    .model664        ( sys_model664          ),
+    .tape_in         ( tape_in_w             ),
+    .tape_motor      ( tape_motor_w          ),
+    .tape_out        ( tape_out_w            ),
+    .audio_l         ( core_audio_l          ),
+    .audio_r         ( core_audio_r          ),
+    .fdc_img_mounted ( fdc_mnt               ),   // deferred while the cold reset is held (see mnt_defer)
+    .fdc_img_size    ( mnt_size              ),
+    .fdc_wprot       ( sys_floppy_wprot      ),
+    .fdc_fast        ( sys_fdc_fast          ),
+    .fdc_sd_lba      ( fdc_lba               ),
+    .fdc_sd_rd       ( fdc_rd                ),
+    .fdc_sd_wr       ( fdc_wr                ),
+    .fdc_sd_ack      ( sd_rbusy & grant_fdc    ),
+    .fdc_buff_addr   ( sd_outaddr            ),
+    .fdc_buff_dout   ( sd_outbyte            ),
+    .fdc_buff_wr     ( sd_outen & grant_fdc    ),
+    .fdc_buff_din    ( fdc_wr_data           ),
+    .fdc_dbg_flags   ( fdc_dbg_flags         ),
+    .fdc_dbg_msr     ( fdc_dbg_msr           ),
+    .fdc_dbg_scan    ( fdc_dbg_scan          ),
     // Flash SPI (via MSPI pins)
     .mspi_cs    ( mspi_cs           ),
     .mspi_di    ( mspi_di           ),
@@ -403,6 +720,7 @@ cpc_core core_inst (
     .dbg_r7_ok  ( core_dbg_r7_ok   ),
     .dbg_r9_ok  ( core_dbg_r9_ok   ),
     .ga_ready_o ( core_ga_ready    ),
+    .dbg_pc     ( core_dbg_pc      ),
     .mode       ( core_mode         ),
     // Sorties mémoire (Phase 3c)
     .mem_addr   ( core_mem_addr     ),
@@ -415,6 +733,8 @@ cpc_core core_inst (
     .cpu_dout   ( core_cpu_dout     ),
     .cpu_din    ( cpu_dout_w        ),  // données SDRAM → Z80 (lecture)
     .cpu_ack_in ( cpu_ack_w         ),  // SDRAM CPU ack → gating READY Z80
+    .cpu_soon_in ( cpu_soon_w       ),
+    .wait_gate_en ( sys_waitgate    ),
     // VRAM data (Phase 3c)
     .vram_din_i ( core_vram_din     ),  // données 16-bit SDRAM → CRTC
     // Diagnostic readback
@@ -423,17 +743,309 @@ cpc_core core_inst (
     .wr_rd_ok      ( core_wr_rd_ok      ),
     .wr_rd_done    ( core_wr_rd_done    ),
     .rb_byte       ( core_rb_byte       ),
-    .dbg_first_flash_word ( core_dbg_first_flash )
+    .dbg_first_flash_word ( core_dbg_first_flash ),
+    .flash_retry  ( core_flash_retry ),
+    .flash_err    ( core_flash_err   )
 );
 
-// SPI MCU → sortie inactive
-assign spi_io_dout   = 1'b1;
-assign spi_intn      = 1'b1;
+// ---------------------------------------------------------------------------
+// BL616 FPGA-Companion : clavier + joysticks (Phase 4)
+//
+//   spi_* -> mcu_spi (target id) -> mcu_hid (target 1) -> hid_cpc_matrix
+//   -> cpc_core.ext_key (OR dans la matrice de hid.sv, lignes 0..9 du CPC)
+//
+//   Les cibles sys (0), osd (2) et sdc (3) ne sont pas encore implémentées
+//   (Phase 5/6) : leurs strobes sont ignorés et leurs octets de réponse = 0.
+// ---------------------------------------------------------------------------
+wire        mcu_sys_strobe, mcu_hid_strobe, mcu_osd_strobe, mcu_sdc_strobe;
+wire        mcu_start;
+wire  [7:0] mcu_dout;
+wire  [7:0] mcu_hid_dout;
+wire  [7:0] sys_data_out, sdc_data_out;
 
-// SD card désactivé
-assign sd_clk        = 1'b0;
-assign sd_cmd        = 1'bz;
-assign sd_dat        = 4'bz;
+mcu_spi mcu_spi_inst (
+    .clk            ( clk32           ),
+    .reset          ( por | spi_sw    ),   // spi_sw: re-arm the start-up guard when the SPI source switches
+    .spi_io_ss      ( spi_io_ss       ),
+    .spi_io_clk     ( spi_io_clk      ),
+    .spi_io_din     ( spi_io_din      ),
+    .spi_io_dout    ( spi_io_dout     ),
+    .mcu_sys_strobe ( mcu_sys_strobe  ),
+    .mcu_hid_strobe ( mcu_hid_strobe  ),
+    .mcu_osd_strobe ( mcu_osd_strobe  ),
+    .mcu_sdc_strobe ( mcu_sdc_strobe  ),
+    .mcu_start      ( mcu_start       ),
+    .mcu_sys_din    ( sys_data_out    ),
+    .mcu_hid_din    ( mcu_hid_dout    ),
+    .mcu_osd_din    ( 8'h00           ),
+    .mcu_sdc_din    ( sdc_data_out    ),
+    .mcu_dout       ( mcu_dout        )
+);
+
+wire [127:0] hid_keyboard;
+wire   [7:0] hid_joy0, hid_joy1;
+
+mcu_hid mcu_hid_inst (
+    .clk            ( clk32           ),
+    .rst_n          ( ~(por | spi_sw) ),   // spi_sw: forget keys / joystick seen before the SPI source switched
+    .data_in_strobe ( mcu_hid_strobe  ),
+    .data_in_start  ( mcu_start       ),
+    .data_in        ( mcu_dout        ),
+    .data_out       ( mcu_hid_dout    ),
+    .keyboard       ( hid_keyboard    ),
+    .joystick0      ( hid_joy0        ),
+    .joystick1      ( hid_joy1        )
+);
+
+wire [79:0] bl616_key;
+
+hid_cpc_matrix hid_cpc_matrix_inst (
+    .kb  ( hid_keyboard ),
+    .key ( bl616_key    )
+);
+
+// ---------------------------------------------------------------------------
+// RP2040 (Pico) USB companion : UART 115200 8N1 sur spare[3] (pin 31)
+// Même protocole que MSXnano ; cellules CPC (firmware/keymaps_cpc.h).
+// Peut coexister avec le BL616 : touches et joysticks sont mélangés par OU.
+// ---------------------------------------------------------------------------
+wire [79:0] pico_key;
+wire  [7:0] pico_joy0, pico_joy1;
+wire        pico_alive;
+
+kbd_uart_rx_cpc #(.CLK_FREQ(32_000_000), .BAUD(115200)) kbd_uart_inst (
+    .clk        ( clk32       ),
+    .rst_n      ( ~por        ),
+    .rx         ( spare_rx    ),
+    .ext_key    ( pico_key    ),
+    .joy_state0 ( pico_joy0   ),
+    .joy_state1 ( pico_joy1   ),
+    .link_alive ( pico_alive  )
+);
+
+// Power-on keyboard mask: ignore both keyboard sources for ~2 s after the ROMs are loaded. A stray
+// "cursor right" (with a key click) appeared at power-on even without joystick; this keeps any
+// start-up glitch of the BL616 / Pico links away from the firmware's first keyboard scans.
+reg [26:0] kb_mask_cnt = 27'd0;
+always @(posedge clk32) begin
+    if (por || boot_busy_w)        kb_mask_cnt <= 27'd0;
+    else if (!kb_mask_cnt[26])     kb_mask_cnt <= kb_mask_cnt + 27'd1;
+end
+// Diagnostics for the "cursor right at power-on" problem: LED4 = a key from the BL616 was seen,
+// LED3 = a key from the Pico was seen, both measured BEFORE the mask and sticky until power-off.
+always @(posedge clk32) begin
+    if (por) begin bl616_seen <= 1'b0; pico_seen <= 1'b0; end
+    else begin
+        if (|bl616_key) bl616_seen <= 1'b1;
+        if (|pico_key)  pico_seen  <= 1'b1;
+    end
+end
+assign cpc_ext_key = kb_mask_cnt[26] ? (bl616_key | pico_key) : 80'd0;
+
+// Companion joystick (actif haut) : [0]=R [1]=L [2]=D [3]=U [4]=bouton A [5]=bouton B
+// -> format hid.sv : [3:0] idem, [5]=Fire1 (bouton A), [4]=Fire2 (bouton B), [6]=Fire3 (inutilisé)
+// DB9 joystick on the Tang Nano header (switches to GND, pull-ups in the .cst = active low):
+// io[0]=BTN0 io[1]=DOWN io[2]=UP io[3]=RIGHT io[4]=LEFT io[5]=BTN1  -> CPC joystick 1
+reg [5:0] db9_s1, db9_s2;
+// Start-up/noise protection: the pins are ignored (released) for ~0.26 s after power-on and a
+// change is only accepted when it is stable for two samples 1 ms apart (the CPC firmware shows
+// a cursor key if a direction is seen while it boots).
+reg [5:0]  db9_last = 6'h3F, db9_ok = 6'h3F;
+reg [14:0] db9_t = 15'd0;
+reg [23:0] db9_w = 24'd0;
+always @(posedge clk32) begin
+    db9_s1 <= io; db9_s2 <= db9_s1;
+    db9_t  <= db9_t + 15'd1;
+    if (por) begin
+        db9_w  <= 24'd0;
+        db9_ok <= 6'h3F;
+    end else begin
+        if (!db9_w[23]) db9_w <= db9_w + 24'd1;
+        if (db9_t == 15'd0) begin
+            db9_last <= db9_s2;
+            if (db9_w[23] && db9_last == db9_s2) db9_ok <= db9_s2;
+        end
+    end
+end
+// OSD 'Fire swap': exchange BTN0 (io[0], Fire 1) and BTN1 (io[5], Fire 2)
+wire db9_b0 = sys_firesw ? ~db9_ok[5] : ~db9_ok[0];
+wire db9_b1 = sys_firesw ? ~db9_ok[0] : ~db9_ok[5];
+wire [7:0] db9_joy = { 2'b00, db9_b1, db9_b0, ~db9_ok[2], ~db9_ok[1], ~db9_ok[4], ~db9_ok[3] };
+
+wire [7:0] joy_a = hid_joy0 | pico_joy0 | db9_joy;
+wire [7:0] joy_b = hid_joy1 | pico_joy1;
+assign cpc_joy1 = { 1'b0, joy_a[4], joy_a[5], joy_a[3:0] };
+assign cpc_joy2 = { 1'b0, joy_b[4], joy_b[5], joy_b[3:0] };
+
+// ---------------------------------------------------------------------------
+// Système + SD card + disquettes (Étape 1)
+//
+//   sysctrl (cible 0) : menu OSD (cpc_xml.hex), reset, protection, vitesse FDC
+//   sd_card (cible 3) : le companion monte les images (.dsk) ; le coeur lit
+//                       les secteurs via rstart/rsector (source 0 = lecteur A,
+//                       1 = lecteur B), les données arrivent par outen/outbyte.
+//   int_in = {sdc_int sur le bit 3} comme dans C64Nano.
+// ---------------------------------------------------------------------------
+sysctrl sysctrl_inst (
+    .clk                 ( clk32            ),
+    .reset               ( por              ),
+    .data_in_strobe      ( mcu_sys_strobe   ),
+    .data_in_start       ( mcu_start        ),
+    .data_in             ( mcu_dout         ),
+    .data_out            ( sys_data_out     ),
+    .int_out_n           ( sys_int_n        ),
+    .int_in              ( {4'b0000, sdc_int, 3'b000} ),
+    .int_ack             ( sys_int_ack      ),
+    .buttons             ( 2'b00            ),
+    .leds                ( sys_leds         ),
+    .color               ( sys_color        ),
+    .port_status         ( 32'd0            ),
+    .port_out_available  ( 8'd0             ),
+    .port_out_strobe     (                  ),
+    .port_out_data       ( 8'd0             ),
+    .port_in_available   ( 8'd0             ),
+    .port_in_strobe      (                  ),
+    .port_in_data        (                  ),
+    .system_reset        ( sys_reset_w      ),
+    .system_floppy_wprot ( sys_floppy_wprot ),
+    .system_fdc_fast     ( sys_fdc_fast     ),
+    .system_rom_slot     ( sys_rom_slot     ),
+    .system_rom_clear    ( sys_rom_clear    ),
+    .system_rom_clearset ( sys_rom_clearset ),
+    .system_amsdos       ( sys_amsdos       ),
+    .system_waitgate     ( sys_waitgate     ),
+    .system_hlock        ( sys_hlock        ),
+    .system_mono         ( sys_mono         ),
+    .system_tapesnd      ( sys_tapesnd      ),
+    .system_volume       ( sys_volume       ),
+    .system_vpos         ( sys_vpos         ),
+    .system_vlock        ( sys_vlock        ),
+    .system_vrate        ( sys_vrate        ),
+    .system_rgbout       ( sys_rgbout       ),
+    .system_firesw       ( sys_firesw       ),
+    .system_wide         ( sys_wide         ),
+    .system_model664     ( sys_model664     ),
+    .system_hpos         ( sys_hpos         ),
+    .system_tape_inv     ( sys_tape_inv     ),
+    .system_tape_prot    ( sys_tape_prot    ),
+    .system_w800         ( sys_w800         )
+);
+
+assign spi_intn = sys_int_n;
+
+sd_arb sd_arb_inst (
+    .clk        ( clk32        ),
+    .reset      ( por          ),
+    .fdc_lba    ( fdc_lba      ),
+    .fdc_rd     ( fdc_rd       ),
+    .fdc_wr     ( fdc_wr       ),
+    .tape_lba   ( tape_lba     ),
+    .tape_rd    ( tape_rd      ),
+    .rec_lba    ( tape_rec_lba ),
+    .rec_rd     ( tape_rec_rd  ),
+    .rec_wr     ( tape_rec_wr  ),
+    .rom_lba    ( rom_lba      ),
+    .rom_rd     ( rom_rd       ),
+    .rom_set    ( rom_set      ),
+    .rbusy      ( sd_rbusy     ),
+    .rstart     ( arb_rstart   ),
+    .wstart     ( arb_wstart   ),
+    .rsector    ( arb_rsector  ),
+    .grant_fdc  ( grant_fdc    ),
+    .grant_tape ( grant_tape   ),
+    .grant_rec  ( grant_rec    ),
+    .grant_rom  ( grant_rom    )
+);
+
+// Cassette (Étape 2) : image 2 de l'OSD, lecture CDT/TZX, signal -> PPI port B bit 7
+cpc_tape cpc_tape_inst (
+    .clk          ( clk32                    ),
+    .reset        ( por                      ),
+    .img_mounted  ( tape_mnt                 ),   // deferred while the cold reset is held (see mnt_defer)
+    .img_size     ( mnt_size                 ),
+    .motor        ( tape_motor_run           ),
+    .wr_en        ( ~sys_tape_prot           ),
+    .tape_out     ( tape_out_w               ),
+    .rec_active   ( tape_rec_led             ),
+    .rec_err      ( tape_rec_err             ),
+    .invert       ( sys_tape_inv             ),
+    .tape_in      ( tape_in_w                ),
+    .present      ( tape_present             ),
+    .sd_rd        ( tape_rd                  ),
+    .sd_lba       ( tape_lba                 ),
+    .sd_busy      ( sd_rbusy & grant_tape    ),
+    .sd_buff_addr ( sd_outaddr               ),
+    .sd_buff_dout ( sd_outbyte               ),
+    .sd_buff_wr   ( sd_outen & grant_tape    ),
+    .rec_sd_rd    ( tape_rec_rd              ),
+    .rec_sd_wr    ( tape_rec_wr              ),
+    .rec_sd_lba   ( tape_rec_lba             ),
+    .rec_sd_busy  ( sd_rbusy & grant_rec     ),
+    .rec_buff_wr  ( sd_outen & grant_rec     ),
+    .rec_wr_data  ( tape_rec_data            )
+);
+
+// ROMs externes (Étape 3) : image 3 de l'OSD -> slot choisi (0..31)
+cpc_romload cpc_romload_inst (
+    .clk          ( clk32                    ),
+    .reset        ( por | cold_w            ),
+    .img_mounted  ( sd_img_mounted[3]        ),
+    .set_mounted  ( sd_img_mounted[4]        ),
+    .img_size     ( sd_img_size              ),
+    .slot         ( sys_rom_slot             ),
+    .clear        ( sys_rom_clear            ),
+    .clear_set    ( sys_rom_clearset         ),
+    .amsdos_en    ( sys_amsdos               ),
+    .boot_idle    ( core_wr_rd_done          ),
+    .prog         ( rom_prog                 ),
+    .restore      ( rom_restore              ),
+    .forget       ( factory_w                ),
+    .sd_rd        ( rom_rd                   ),
+    .sd_set       ( rom_set                  ),
+    .sd_lba       ( rom_lba                  ),
+    .sd_busy      ( sd_rbusy & grant_rom     ),
+    .sd_buff_addr ( sd_outaddr               ),
+    .sd_buff_dout ( sd_outbyte               ),
+    .sd_buff_wr   ( sd_outen & grant_rom     ),
+    .ram_addr     ( rl_addr                  ),
+    .ram_din      ( rl_din                   ),
+    .ram_req      ( rl_req                   ),
+    .ram_ack      ( boot_ack_w               ),
+    .rom_map      ( core_rom_map             ),
+    .busy         ( rom_busy                 )
+);
+
+sd_card #(.CLK_DIV(3'd2), .SIMULATE(0), .IMAGE_FIFO_BITS(1)) sd_card_inst (
+    .rstn                       ( ~por             ),
+    .clk                        ( clk32            ),
+    .sdclk                      ( sd_clk           ),
+    .sdcmd                      ( sd_cmd           ),
+    .sddat                      ( sd_dat           ),
+    .data_strobe                ( mcu_sdc_strobe   ),
+    .data_start                 ( mcu_start        ),
+    .data_in                    ( mcu_dout         ),
+    .data_out                   ( sdc_data_out     ),
+    .irq                        ( sdc_int          ),
+    .iack                       ( sys_int_ack[3]   ),
+    .image_size                 ( sd_img_size      ),
+    .image_mounted              ( sd_img_mounted   ),
+    .rom_image_selection_strobe (                  ),
+    .rom_image_selected         (                  ),
+    .rom_image_accepted         ( 1'b0             ),
+    .rom_image_data_available   (                  ),
+    .rom_image_data             (                  ),
+    .rom_image_data_strobe      ( 1'b0             ),
+    .rstart                     ( arb_rstart       ),
+    .wstart                     ( arb_wstart       ),
+    .rsector                    ( arb_rsector      ),
+    .rsrc                       ( sd_rsrc          ),
+    .rbusy                      ( sd_rbusy         ),
+    .rdone                      ( sd_rdone         ),
+    .inbyte                     ( grant_rec ? tape_rec_data : fdc_wr_data ),
+    .outen                      ( sd_outen         ),
+    .outaddr                    ( sd_outaddr       ),
+    .outbyte                    ( sd_outbyte       )
+);
 
 // ---------------------------------------------------------------------------
 // Pipeline vidéo CPC → HDMI (Phase 3d)
@@ -458,7 +1070,7 @@ wire       cm_hs, cm_vs, cm_hb, cm_vb;
 color_mix color_mix_inst (
     .clk_vid    ( clk32         ),
     .ce_pix     ( ce_pix_r      ),
-    .mix        ( 3'd0          ),    // 0 = couleurs GA40010
+    .mix        ( {1'b0, sys_mono, 1'b0} ),    // 0 = couleurs GA40010, 2 = green monitor (OSD)
 
     .R_in       ( core_red      ),
     .G_in       ( core_green    ),
@@ -476,6 +1088,44 @@ color_mix color_mix_inst (
     .HBlank_out ( cm_hb         ),
     .VBlank_out ( cm_vb         )
 );
+
+// -- 15 kHz RGB + CSYNC output (like the original CPC, before the scandoubler) --
+// GA colour code per channel {level, OE_n}: 00 = 0, X1 (OE_n=1, high-Z) = 1/2, 10 = full.
+reg [1:0] rgb_r_r, rgb_g_r, rgb_b_r;
+reg       csync_r;
+wire      core_blank = core_hblank | core_vblank;
+always @(posedge clk32) begin
+    rgb_r_r <= core_blank ? 2'b00 : {core_red[0]   | core_red[1],   core_red[1]   & ~core_red[0]};
+    rgb_g_r <= core_blank ? 2'b00 : {core_green[0] | core_green[1], core_green[1] & ~core_green[0]};
+    rgb_b_r <= core_blank ? 2'b00 : {core_blue[0]  | core_blue[1],  core_blue[1]  & ~core_blue[0]};
+    csync_r <= ~(core_hsync ^ core_vsync);
+end
+// Fixed RGB phase: the RGB lines are delayed against CSYNC (csync_r, never delayed). A converter that samples
+// the RGB lines with its own fixed phase (VGA4CPC) flickers when the exact 16 MHz pixel edges coincide with its
+// sampling instant. Measured on hardware (old 6.25 ns chain / half-period steps): VGA4CPC quiet at +16 and
+// +31 ns, flicker at 0 ns (left border at +47 ns); RGBtoHDMI quiet at 0, +16 and +47 ns, flicker at +31 ns.
+// -> +16 ns suits both and is the value used here.
+//
+// The delay is set by WHICH register drives the pins (all in the clk32 domain, no clock crossing; one step =
+// half a clk32 period = 15.6 ns; the CPC pixel is 62.5 ns):
+//     delay (this file)      pins driven by                                          old menu label (e8e7d04)
+//       0 ns                 {rgb_r_r, rgb_g_r, rgb_b_r}  (posedge clk32 registers)  "-16 ns"
+//     +16 ns  (USED)         rgb_n1   (negedge clk32 copy of the above)              "0 ns"
+//     +31 ns                 rgb_p2   (posedge copy of rgb_n1)                       "+16 ns"
+//     +47 ns                 rgb_n2   (negedge copy of rgb_p2)                       "+31 ns"
+// To change it: add the copy registers, e.g.
+//     reg [5:0] rgb_p2; always @(posedge clk32) rgb_p2 <= rgb_n1;      // +31 ns
+//     reg [5:0] rgb_n2; always @(negedge clk32) rgb_n2 <= rgb_p2;      // +47 ns
+// and use that register in the three assigns below.
+// Intermediate values are not possible in this domain (resolution = half a clk32 period). 6.25 ns steps need a
+// clk160 delay chain (tried in e760958 / 97de0e7: clk32 -> clk160 crossing, timing violations, boot failures);
+// an IODELAY primitive on the output pins would be the other way (not tried).
+reg [5:0] rgb_n1;
+always @(negedge clk32) rgb_n1 <= {rgb_r_r, rgb_g_r, rgb_b_r};
+assign rgb_r = sys_rgbout ? rgb_n1[5:4] : 2'bzz;
+assign rgb_g = sys_rgbout ? rgb_n1[3:2] : 2'bzz;
+assign rgb_b = sys_rgbout ? rgb_n1[1:0] : 2'bzz;
+assign csync = sys_rgbout ? csync_r : 1'bz;
 
 // -- Étage 2 : scandoubler — 15kHz → 31kHz --
 // ce_divider=1 : ce_x1 = i_div[0] = 16MHz (sample entrée), ce_x2 = 1'b1 (32MHz sortie)
@@ -495,6 +1145,8 @@ scandoubler #(.HCNT_WIDTH(10)) scandoubler_inst (
     .vs_in      ( cm_vs         ),
 
     .h_offset   ( h_offset_reg[9:0] ),  // décalage horizontal ajustable
+    .grid_rst   ( vreset_any    ),      // HDMI row grid reference (see scandoubler)
+    .hcomp_en   ( sys_hlock     ),      // OSD 'H lock'
     .pixel_ena  (               ),    // non utilisé
     .r_out      ( sd_r          ),
     .g_out      ( sd_g          ),
@@ -504,45 +1156,220 @@ scandoubler #(.HCNT_WIDTH(10)) scandoubler_inst (
 );
 
 // -- Étage 3 : video2hdmi — TMDS --
-// audio = zéro en Phase 3d (Phase 7 : YM2149)
+// Audio : YM2149 (8 bits non signés, ~0..190) -> 16 bits signés, composante continue retirée
+// OSD 'Tape sound': the tape signal the CPC reads (square wave) is mixed into both channels while
+// the motor is on. The base range is -12000..+20640, so +-2500 cannot overflow.
+wire signed [15:0] tape_snd = (sys_tapesnd && tape_motor_run) ? ((tape_in_w ^ tape_out_w) ? 16'sd2500 : -16'sd2500) : 16'sd0;
+wire signed [15:0] mix_l16 = $signed({1'b0, core_audio_l, 7'd0}) - 16'sd12000 + tape_snd;
+wire signed [15:0] mix_r16 = $signed({1'b0, core_audio_r, 7'd0}) - 16'sd12000 + tape_snd;
+// OSD 'Volume' (id V): 0 / 25 / 50 / 75 / 100 % of the mixed signal (arithmetic shifts, no multiplier)
+function automatic signed [15:0] vol_scale(input signed [15:0] x, input [2:0] v);
+    case (v)
+        3'd0:    vol_scale = 16'sd0;
+        3'd1:    vol_scale = x >>> 2;
+        3'd2:    vol_scale = x >>> 1;
+        3'd3:    vol_scale = (x >>> 1) + (x >>> 2);
+        default: vol_scale = x;
+    endcase
+endfunction
+wire signed [15:0] audio_l16 = vol_scale(mix_l16, sys_volume);
+wire signed [15:0] audio_r16 = vol_scale(mix_r16, sys_volume);
 wire [15:0] audio_zero [1:0];
-assign audio_zero[0] = 16'h0;
-assign audio_zero[1] = 16'h0;
+assign audio_zero[0] = audio_l16;
+assign audio_zero[1] = audio_r16;
 
 // Vidéo CPC vers HDMI
-wire [5:0] vid_r = sd_r;
-wire [5:0] vid_g = sd_g;
-wire [5:0] vid_b = sd_b;
+wire [5:0] vid_r, vid_g, vid_b;
+wire  [9:0] hcx, hcy;                         // HDMI column / row counter (declared here: used by the OSD and the V controller)
 
-// vreset : one-shot au boot uniquement (sync verticale HDMI → CPC)
-// L'alignement horizontal est géré par h_offset dans le scandoubler
-reg sd_vs_d;
-reg vreset_pending;
-reg vreset_done;
+osd_u8g2 osd_inst (
+    .clk            ( clk32           ),
+    .reset          ( por             ),
+    .data_in_strobe ( mcu_osd_strobe  ),
+    .data_in_start  ( mcu_start       ),
+    .data_in        ( mcu_dout        ),
+    .hs             ( sd_hs           ),
+    .vs             ( sd_vs           ),
+    .grid_en        ( 1'b1            ),   // OSD fixed to the HDMI raster (not to the CPC HSync / VSync)
+    .gx             ( hcx             ),
+    .gy             ( hcy             ),
+    .gx_off         ( sys_w800 ? 10'd112 : 10'd152 ),   // 512 - window centre column (400 resp. 360)
+    .r_in           ( sd_r            ),
+    .g_in           ( sd_g            ),
+    .b_in           ( sd_b            ),
+    .r_out          ( vid_r           ),
+    .g_out          ( vid_g           ),
+    .b_out          ( vid_b           )
+);
+
+// vreset: the HDMI frame counters (cx, cy) are forced to 0 once so that the HDMI frame
+// matches the CPC picture. It used to fire at the first vsync after any reset, i.e. while
+// the CRTC still ran its start-up frames (cold boot: even before the CPC was released),
+// and at an arbitrary horizontal phase, so the picture sat too far left and the HDMI row
+// boundary fell inside the visible line (a 1-line step at a fixed column). Now:
+//   - re-armed when the CPC is released from reset AND from the boot loader (boot_busy),
+//   - skips 16 frames (0.3 s) so the firmware has programmed the CRTC,
+//   - then fires at the next scandoubler line boundary (falling edge of sd_hs), so the
+//     HDMI row start always coincides with the start of a scandoubler line.
+// The horizontal picture position is set by h_offset (OSD "H pos").
+reg sd_vs_d, sd_hs_d;
+reg vreset_wait_hs;
+reg [4:0] vreset_frames;
 reg vreset_pulse;
+reg sys_rst_d;
 always @(posedge clk32) begin
     if (por) begin
+        sys_rst_d       <= 1'b0;
         sd_vs_d         <= 1'b0;
-        vreset_pending  <= 1'b0;
+        sd_hs_d         <= 1'b0;
         vreset_done     <= 1'b0;
+        vreset_wait_hs  <= 1'b0;
+        vreset_frames   <= 5'd0;
         vreset_pulse    <= 1'b0;
     end else begin
         sd_vs_d <= sd_vs;
+        sd_hs_d <= sd_hs;
         vreset_pulse <= 1'b0;
-        // front descendant vsync → tirer vreset (une seule fois)
-        if (!vreset_done && sd_vs_d && !sd_vs) begin
-            vreset_pulse <= 1'b1;
-            vreset_done  <= 1'b1;
+        sys_rst_d <= cpc_in_reset;
+        if (cpc_in_reset || (sys_rst_d && !cpc_in_reset)) begin
+            vreset_done    <= 1'b0;               // (re-)arm; counting starts after the release
+            vreset_wait_hs <= 1'b0;
+            vreset_frames  <= 5'd0;
+        end else if (!vreset_done) begin
+            if (sd_vs_d && !sd_vs) begin
+                if (vreset_frames == 5'd16) vreset_wait_hs <= 1'b1;
+                else                         vreset_frames <= vreset_frames + 5'd1;
+            end
+            if (vreset_wait_hs && sd_hs_d && !sd_hs) begin
+                vreset_pulse   <= 1'b1;
+                vreset_done    <= 1'b1;
+                vreset_wait_hs <= 1'b0;
+            end
         end
     end
 end
 
+// OSD 'V pos' (id Z): the HDMI row counter is set to v_start when the HDMI frame is aligned to the CPC
+// VSync (vreset). Like 'H pos' it moves the whole picture (blue area, border, text): one step = 16 HDMI
+// rows (= 4 CPC lines = half a character row; 2026-10-29: was 16 rows); the row counter grows downwards, so a
+// larger value at the CPC VSync puts the picture lower. v_start = 568 + 8*(v - 8) mod 624, v = 8 (label 0) = 568
+// (the old label-0 position 560 plus half a character: the picture sat ~4 CPC lines too high compared with a real CPC).
+wire [10:0] v_raw   = 11'd504 + {4'd0, sys_vpos, 3'd0};                  // 568 + 8*(v-8)
+wire  [9:0] v_start = (v_raw >= 11'd624) ? (v_raw - 11'd624) : v_raw[9:0];
+// V pos / V lock controller. The picture is moved WITHOUT a full HDMI reset (which also restarts the
+// horizontal counter and the TMDS serializers, so the monitor had to re-sync): after the CPC VSync (and the
+// next line boundary) the phase of the HDMI row counter is measured, and the row counter is loaded once
+// (cy_arm, applied at the next row boundary) with its natural next value plus a correction of at most 16 rows
+// (= one frame of 624+-16 rows). Natural next value = hcy + 1, so the load only adds the correction.
+//   V lock Off : free running HDMI frame; the correction only walks the picture from the old to the new V pos
+//                (v_cur = the phase the frame is supposed to have; measured drift is NOT corrected).
+//   V lock On  : the HDMI row counter is locked to the CPC VSync like a monitor: the measured phase A (row
+//                index at the row boundary nearest to the VSync/hs event) is moved towards v_start by at most
+//                16 rows per frame, so frame length changes, R7 changes and the irregular frames when a demo
+//                reprograms the CRTC are followed (a large error scrolls back within a few frames).
+// Distance is taken the short way round the 624-row frame. A full vreset (start-up/reset) sets v_cur.
+reg   [9:0] v_cur = 10'd568;
+reg   [3:0] vp_st = 4'd0;
+reg         vp_wait_hs = 1'b0, vp_arm = 1'b0;
+reg   [9:0] cap_cx = 10'd0, cap_cy = 10'd0, vp_val = 10'd0, vp_add = 10'd0;
+reg  [10:0] vp_a = 11'd0, vp_ref = 11'd0, vp_dfw = 11'd0, vp_mag = 11'd0, vp_tmp = 11'd0;
+reg         vp_fwd = 1'b0;
+reg  [10:0] vp_e = 11'd0;                    // measured phase minus expected phase (V lock On), mod 624
+reg   [2:0] vp_cnt = 3'd0;                   // consecutive frames with no irregularity (V lock On)
+wire [10:0] vp_rate = 11'd1 << sys_vrate;     // largest correction per frame (rows)
+always @(posedge clk32) begin
+    vp_arm <= 1'b0;
+    if (por) begin
+        v_cur <= 10'd568; vp_wait_hs <= 1'b0; vp_st <= 4'd0; vp_cnt <= 3'd0;
+    end else if (vreset_pulse) begin
+        v_cur <= v_start; vp_wait_hs <= 1'b0; vp_st <= 4'd0; vp_cnt <= 3'd0;
+    end else if (cpc_in_reset) begin
+        vp_wait_hs <= 1'b0; vp_st <= 4'd0;
+    end else begin
+        case (vp_st)
+        4'd0: begin                              // wait for a CPC VSync, then for the next line boundary
+            if ((sys_vlock || v_cur != v_start) && sd_vs_d && !sd_vs) vp_wait_hs <= 1'b1;
+            if (vp_wait_hs && sd_hs_d && !sd_hs) begin
+                cap_cx <= hcx; cap_cy <= hcy; vp_wait_hs <= 1'b0; vp_st <= 4'd1;
+            end
+        end
+        4'd1: begin                              // phase A = row index of the row boundary nearest to the event
+            vp_tmp <= (cap_cx >= 10'd512) ? ({1'b0, cap_cy} + 11'd1) : {1'b0, cap_cy};
+            vp_st <= 4'd2;
+        end
+        4'd2: begin
+            vp_a   <= (vp_tmp >= 11'd624) ? (vp_tmp - 11'd624) : vp_tmp;
+            vp_st <= 4'd3;
+        end
+        4'd3: begin                              // reference: measured phase (lock) or the assumed one
+            vp_ref <= sys_vlock ? vp_a : {1'b0, v_cur};
+            // V lock On: error of the measured phase against the phase expected from the previous frame
+            // (v_cur already contains our own correction): 0 or +-1 row = regular frame
+            vp_e   <= (vp_a >= {1'b0, v_cur}) ? (vp_a - {1'b0, v_cur}) : (vp_a + 11'd624 - {1'b0, v_cur});
+            vp_st <= 4'd4;
+        end
+        4'd4: begin                              // distance forwards from ref to v_start (0..623)
+            vp_cnt <= (vp_e <= 11'd1 || vp_e >= 11'd623) ? ((vp_cnt == 3'd7) ? 3'd7 : vp_cnt + 3'd1) : 3'd0;
+            vp_dfw <= ({1'b0, v_start} >= vp_ref) ? ({1'b0, v_start} - vp_ref)
+                                                  : ({1'b0, v_start} + 11'd624 - vp_ref);
+            vp_st <= 4'd5;
+        end
+        4'd5: begin                              // shortest way round, at most 16 rows
+            vp_fwd <= (vp_dfw <= 11'd312);
+            vp_tmp <= (vp_dfw <= 11'd312) ? vp_dfw : (11'd624 - vp_dfw);
+            vp_st <= 4'd6;
+        end
+        4'd6: begin
+            // V lock On: only after 3 regular frames in a row (no chasing of the irregular frames while a
+            // demo reprograms the CRTC: every correction makes a frame 624+-n rows long and the monitor
+            // lost the signal), and only 4 rows per frame; V lock Off (V pos walk): 16 rows per frame
+            // (rate = OSD 'V rate', 1 << 0..4 rows per frame, default 4; before it was 4 for V lock and 16 for the V pos walk)
+            if (sys_vlock) vp_mag <= (vp_cnt < 3'd3) ? 11'd0 : ((vp_tmp > vp_rate) ? vp_rate : vp_tmp);
+            else           vp_mag <= (vp_tmp > vp_rate) ? vp_rate : vp_tmp;
+            vp_st <= 4'd7;
+        end
+        4'd7: begin                              // correction as a forwards value 0..623, new v_cur = ref + correction
+            vp_add <= vp_fwd ? vp_mag[9:0] : (10'd624 - vp_mag[9:0]);
+            vp_st <= 4'd8;
+        end
+        4'd8: begin
+            vp_tmp <= vp_ref + {1'b0, vp_add};
+            vp_st <= 4'd9;
+        end
+        4'd9: begin
+            v_cur <= (vp_tmp >= 11'd624) ? (vp_tmp[9:0] - 10'd624) : vp_tmp[9:0];
+            vp_st <= (vp_mag == 11'd0) ? 4'd0 : 4'd10;     // nothing to correct: done
+        end
+        4'd10: if (hcx >= 10'd64 && hcx < 10'd960) begin    // safely inside a row: no boundary in the next cycles
+            vp_tmp <= {1'b0, hcy} + 11'd1 + {1'b0, vp_add};
+            vp_st <= 4'd11;
+        end
+        4'd11: begin
+            vp_val <= (vp_tmp >= 11'd1248) ? (vp_tmp[9:0] - 10'd624 - 10'd624) :
+                      (vp_tmp >= 11'd624)  ? (vp_tmp[9:0] - 10'd624) : vp_tmp[9:0];
+            vp_st <= 4'd12;
+        end
+        4'd12: begin vp_arm <= 1'b1; vp_st <= 4'd0; end
+        default: vp_st <= 4'd0;
+        endcase
+    end
+end
+assign vreset_any = vreset_pulse;
+
 video2hdmi video2hdmi_inst (
     .clk_pixel_x5 ( clk160       ),  // 160 MHz TMDS
     .clk_pixel    ( clk32        ),  // 32 MHz pixel
-    .vreset       ( vreset_pulse ),  // sync HDMI au CPC, aligné hsync
+    .vreset       ( vreset_any   ),  // sync HDMI au CPC, aligné hsync
+    .v_start      ( v_start      ),  // row counter value at a full vreset (OSD 'V pos')
+    .cy_arm       ( vp_arm       ),  // V pos / V lock: row counter load at the next row boundary
+    .cy_val       ( vp_val       ),
+    .cx_o         ( hcx          ),
+    .cy_o         ( hcy          ),
+    .load_en      ( rom_busy     ),  // ROM load progress bar: start-up and also loads while the CPC runs (was rom_rst = start-up only)
+    .load_blk     ( rom_prog     ),
     .vmode        ( 2'd1         ),  // PAL 50 Hz hardcodé (évite bascule NTSC/PAL au boot)
-    .screen       ( 2'd0         ),  // standard (pas d'overscan)
+    .screen       ( {1'b0, sys_w800} ),  // 0 = standard 720 px, 1 = 800 px active width (OSD 'Width')
+    .fullscreen   ( sys_wide     ),  // AVI InfoFrame: 16:9 (full screen) instead of 4:3
     .r            ( vid_r        ),
     .g            ( vid_g        ),
     .b            ( vid_b        ),
@@ -552,5 +1379,46 @@ video2hdmi video2hdmi_inst (
     .tmds_d_n     ( tmds_d_n     ),
     .tmds_d_p     ( tmds_d_p     )
 );
+
+// ---------------------------------------------------------------------------
+// Static start-up diagnostics (2026-10-31): sticky flags since power-on, shown on the LEDs while S2 (and
+// S1 + S2) or S1 is held. They replace the former S2 scan display, the S1 + S2 PC snapshot and the S1 FDC flags.
+// Page A (S2): did a ROM-set mount reach the core, and did the load start?
+//   [0] set mount pulse seen          [1] set mount with size > 0 seen   [2] disk A mounted with size > 0
+//   [3] ROM-set load started          [4] second set mount pulse seen    [5] external SPI source active
+//   (eject pulse only = [0] without [1]: the companion could not open the file)
+// Page B (S1 + S2): which source reported a joystick direction / key since power-on?
+//   [0] DB9 RIGHT low while the cold reset was held  [1] DB9 RIGHT low after the release  [2] DB9 any
+//   [3] companion key  [4] Pico-UART key  [5] companion cursor-right key (HID 0x4F).
+//   (Hardware 2026-10-31: companion and Pico-UART joystick flags were never set, so LED0/1 now show timing.)
+//   Do not touch keys / joystick before reading the page.
+// ---------------------------------------------------------------------------
+reg [1:0] dbg_setn = 2'd0;
+always @(posedge clk32) begin
+    if (por) begin
+        dbg_mnt  <= 6'd0;
+        dbg_inp  <= 6'd0;
+        dbg_db9  <= 6'd0;
+        dbg_setn <= 2'd0;
+    end else begin
+        dbg_db9 <= dbg_db9 | ~db9_ok;                  // per line: seen low (active low) since power-on
+        if (sd_img_mounted[4]) begin
+            dbg_mnt[0] <= 1'b1;
+            if (sd_img_size != 32'd0) dbg_mnt[1] <= 1'b1;
+            if (dbg_setn != 2'd2)     dbg_setn <= dbg_setn + 2'd1;
+            if (dbg_setn == 2'd1)     dbg_mnt[4] <= 1'b1;
+        end
+        if (sd_img_mounted[0] && sd_img_size != 32'd0) dbg_mnt[2] <= 1'b1;
+        if (rom_set && rom_prog != 5'd0)               dbg_mnt[3] <= 1'b1;
+        if (spi_ext)                                   dbg_mnt[5] <= 1'b1;
+
+        if (!db9_ok[3] &&  cold_w)  dbg_inp[0] <= 1'b1;   // RIGHT low during the companion's mount phase
+        if (!db9_ok[3] && !cold_w)  dbg_inp[1] <= 1'b1;   // RIGHT low after the reset release
+        if (db9_ok != 6'h3F)        dbg_inp[2] <= 1'b1;
+        if (|bl616_key)             dbg_inp[3] <= 1'b1;
+        if (|pico_key)              dbg_inp[4] <= 1'b1;
+        if (hid_keyboard[7'h4F])    dbg_inp[5] <= 1'b1;
+    end
+end
 
 endmodule

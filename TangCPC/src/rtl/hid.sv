@@ -31,6 +31,9 @@ module hid
 	input  [6:0] joystick1,
 	input  [6:0] joystick2,
 
+	// External key matrix (BL616 companion via hid_cpc_matrix): [8*row+bit], 1 = pressed
+	input [79:0] ext_key,
+
 	input  [3:0] Y,
 	output [7:0] X,
 	output reg   key_nmi,
@@ -40,7 +43,25 @@ module hid
 
 wire row9 = (Y == 9);
 wire row6 = (Y == 6);
-assign X = ~(key[Y] | joy1 | joy2 | mouse);
+// ext_key row selected by PPI port C[3:0]; rows 10..15 do not exist on a CPC
+reg [7:0] ext_row;
+always @(*) begin
+	case (Y)
+		4'd0:    ext_row = ext_key[ 7: 0];
+		4'd1:    ext_row = ext_key[15: 8];
+		4'd2:    ext_row = ext_key[23:16];
+		4'd3:    ext_row = ext_key[31:24];
+		4'd4:    ext_row = ext_key[39:32];
+		4'd5:    ext_row = ext_key[47:40];
+		4'd6:    ext_row = ext_key[55:48];
+		4'd7:    ext_row = ext_key[63:56];
+		4'd8:    ext_row = ext_key[71:64];
+		4'd9:    ext_row = ext_key[79:72];
+		default: ext_row = 8'h00;
+	endcase
+end
+
+assign X = ~(key[Y] | ext_row | joy1 | joy2 | mouse);
 
 //================================= Joysticks ===========================================
 

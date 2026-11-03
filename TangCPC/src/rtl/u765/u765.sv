@@ -54,7 +54,8 @@ module u765 #(parameter CYCLES = 20'd4000, SPECCY_SPEEDLOCK_HACK = 0)
 	input      [8:0] sd_buff_addr,
 	input      [7:0] sd_buff_dout,
 	output     [7:0] sd_buff_din,
-	input            sd_buff_wr
+	input            sd_buff_wr,
+	output reg [5:0] dbg_scan   // {scan state B, scan state A, scan lock, mount read busy} (debug LEDs)
 );
 
 /* verilator lint_off WIDTH */
@@ -229,6 +230,8 @@ reg        sd_busy_sector;
 reg [31:0] i_seek_pos;
 reg        i_write_prev;
 
+reg [23:0] sd_wd;   // watchdog: a request that is never acknowledged must not block the FDC for ever
+
 always @(posedge clk_sys) begin : sdcontrol
 
 		ack <= {ack[4:0], sd_ack};
@@ -241,6 +244,18 @@ always @(posedge clk_sys) begin : sdcontrol
 			sd_busy_tinfo <= 0;
 			sd_busy_sector <= 0;
 		end
+
+		// busy for more than 0.5 s (or controller reset): drop the request
+		if (!(sd_busy_mount | sd_busy_tinfo | sd_busy_sector)) sd_wd <= 24'd0;
+		else sd_wd <= sd_wd + 24'd1;
+		if (reset || sd_wd[23]) begin
+			sd_wd <= 24'd0;
+			sd_rd <= 0;
+			sd_wr <= 0;
+			sd_busy_mount <= 0;
+			sd_busy_tinfo <= 0;
+			sd_busy_sector <= 0;
+		end else
 
 		if (!sd_busy_mount & !sd_busy_tinfo & !sd_busy_sector) begin
 			if (sd_rd_mount != 2'b00) begin
@@ -370,6 +385,7 @@ always @(posedge clk_sys) begin : fdc
 	//reg i_mfm;
 	reg i_sk;
 
+	dbg_scan <= {image_scan_state[1], image_scan_state[0], i_scan_lock, sd_busy_mount};
 	buff_wait <= 0;
 	tinfo_wait <= 0;
 

@@ -13,8 +13,6 @@ IO_PORT "uart_rx" PULL_MODE=UP IO_TYPE=LVCMOS33 BANK_VCCIO=3.3;
 // Console BL616 (pour adaptateur USB-UART externe)
 IO_LOC "bl616_mon_tx" 48;
 IO_PORT "bl616_mon_tx" DRIVE=8 IO_TYPE=LVCMOS33 BANK_VCCIO=3.3;
-IO_LOC "bl616_mon_rx" 55;
-IO_PORT "bl616_mon_rx" PULL_MODE=UP IO_TYPE=LVCMOS33 BANK_VCCIO=3.3;
 
 // Sortie vidéo HDMI (TMDS différentiel)
 IO_LOC "tmds_clk_p" 33,34;
@@ -87,19 +85,7 @@ IO_PORT "io[4]" PULL_MODE=UP IO_TYPE=LVCMOS33;
 IO_LOC "io[5]" 30;
 IO_PORT "io[5]" PULL_MODE=UP IO_TYPE=LVCMOS33;
 
-// GPIO spare — joystick DB9 port 2
-IO_LOC "spare[0]" 73;
-IO_PORT "spare[0]" PULL_MODE=UP IO_TYPE=LVCMOS33;
-IO_LOC "spare[1]" 74;
-IO_PORT "spare[1]" PULL_MODE=UP IO_TYPE=LVCMOS33;
-IO_LOC "spare[2]" 77;
-IO_PORT "spare[2]" PULL_MODE=UP IO_TYPE=LVCMOS33;
-IO_LOC "spare[3]" 31;
-IO_PORT "spare[3]" PULL_MODE=UP IO_TYPE=LVCMOS33;
-IO_LOC "spare[4]" 49;
-IO_PORT "spare[4]" PULL_MODE=UP IO_TYPE=LVCMOS33;
-IO_LOC "spare[5]" 52;
-IO_PORT "spare[5]" PULL_MODE=UP IO_TYPE=LVCMOS33;
+// 73,74,77,49,52 (old spare[0,1,2,4,5]) are free; 31 = Pico UART RX (spare_rx)
 
 // Interface MCU externe M0S Dock
 // Pins 41-42 : GPIO externes 3.3V — LVCMOS33 requis
@@ -130,3 +116,26 @@ IO_LOC "user" 88;
 IO_PORT "user" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 IO_LOC "reset" 87;
 IO_PORT "reset" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+
+// UART RX from the RP2040 (Pico) keyboard companion (was spare[3])
+IO_LOC "spare_rx" 31;
+IO_PORT "spare_rx" PULL_MODE=UP IO_TYPE=LVCMOS33;
+// 15 kHz RGB (2 bits per colour) + composite sync, like the original CPC.
+// Free header pins (not joystick 27,28,25,26,29,30, M0S/SPI 42,41,56,54,51, EDID 52,53, SD 80..85,
+// BL616 link 48,70,75,76,86, LEDs 15..20, ws2812 79); pin 55 = old bl616_mon_rx (was unused).
+// Right header: 72,71 | 55,49 ; left header: 73,74 and 77. GND is next to them on the right header.
+// Do not connect an LCD to the FPC socket (49). Wiring is a proposal, adapt as needed.
+IO_LOC "rgb_r[0]" 72;
+IO_PORT "rgb_r[0]" PULL_MODE=NONE DRIVE=8 IO_TYPE=LVCMOS33;
+IO_LOC "rgb_r[1]" 71;
+IO_PORT "rgb_r[1]" PULL_MODE=NONE DRIVE=8 IO_TYPE=LVCMOS33;
+IO_LOC "rgb_g[0]" 55;
+IO_PORT "rgb_g[0]" PULL_MODE=NONE DRIVE=8 IO_TYPE=LVCMOS33;
+IO_LOC "rgb_g[1]" 49;
+IO_PORT "rgb_g[1]" PULL_MODE=NONE DRIVE=8 IO_TYPE=LVCMOS33;
+IO_LOC "rgb_b[0]" 73;
+IO_PORT "rgb_b[0]" PULL_MODE=NONE DRIVE=8 IO_TYPE=LVCMOS33;
+IO_LOC "rgb_b[1]" 74;
+IO_PORT "rgb_b[1]" PULL_MODE=NONE DRIVE=8 IO_TYPE=LVCMOS33;
+IO_LOC "csync" 77;
+IO_PORT "csync" PULL_MODE=NONE DRIVE=8 IO_TYPE=LVCMOS33;

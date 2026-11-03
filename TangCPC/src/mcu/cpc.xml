@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TangCPC configuration, read by the FPGA Companion (CMD 8 of sysctrl).
+     After editing run:  python3 -I tools/gen_menu_hex.py
+     Labels must fit the 16 character wide OSD. -->
+<config name="CPCTang" version="0">
+  <actions>
+    <!-- executed immediately after this file has been loaded -->
+    <action name="init">
+      <link action="defaults"/>   <!-- every option gets its default first ... -->
+      <load file="cpc.ini"/>      <!-- ... then cpc.ini overrides the options it contains -->
+      <set id="R" value="3"/>   <!-- keep machine in cold reset -->
+    </action>
+
+    <!-- default value of every option (same as the default= attributes of the menu below) -->
+    <action name="defaults">
+      <set id="Y" value="0"/>
+      <set id="T" value="0"/>
+      <set id="U" value="1"/>
+      <set id="P" value="0"/>
+      <set id="F" value="0"/>
+      <set id="L" value="1"/>
+      <set id="A" value="0"/>
+      <set id="H" value="8"/>
+      <set id="X" value="1"/>
+      <set id="Z" value="8"/>
+      <set id="C" value="0"/>
+      <set id="E" value="2"/>
+      <set id="S" value="1"/>
+      <set id="M" value="0"/>
+      <set id="G" value="0"/>
+      <set id="N" value="0"/>
+      <set id="V" value="4"/>
+      <set id="J" value="0"/>
+      <set id="W" value="1"/>
+    </action>
+
+    <!-- executed once all initialization has been done -->
+    <action name="ready">
+      <set id="R" value="0"/>   <!-- release reset -->
+    </action>
+
+    <action name="save">
+      <save file="cpc.ini"/>
+    </action>
+
+    <action name="reset">
+      <set id="R" value="1"/>
+      <delay ms="10"/>
+      <set id="R" value="0"/>
+    </action>
+
+    <action name="reset_hide">
+      <link action="reset"/>
+      <hide/>
+    </action>
+
+    <action name="clear_set">
+      <set id="Q" value="1"/>
+      <delay ms="10"/>
+      <set id="Q" value="0"/>
+    </action>
+
+    <action name="clear_slot">
+      <set id="K" value="1"/>
+      <delay ms="10"/>
+      <set id="K" value="0"/>
+    </action>
+
+    <!-- Cold boot = like power-off/on: re-run the start-up actions, i.e. load cpc.ini again
+         (settings and the saved images incl. the ROM set) while the machine is held in cold reset -->
+    <action name="cold_reset">
+      <link action="init"/>
+      <delay ms="10"/>
+      <link action="ready"/>
+    </action>
+
+    <action name="cold_reset_hide">
+      <link action="cold_reset"/>
+      <hide/>
+    </action>
+
+    <!-- Factory boot: CPC 6128 with the default settings and no external ROMs. R=2 is a cold reset
+         after which the core loads no ROM files (they stay remembered for the next cold boot); cpc.ini is not read (and not changed). -->
+    <action name="factory_reset">
+      <set id="R" value="2"/>
+      <link action="defaults"/>
+      <delay ms="10"/>
+      <link action="ready"/>
+    </action>
+
+    <action name="factory_reset_hide">
+      <link action="factory_reset"/>
+      <hide/>
+    </action>
+  </actions>
+
+  <menu label="CPCTang">
+    <menu label="Storage">
+      <fileselector label="Drive A:" ext="dsk" index="0"/>
+      <fileselector label="Drive B:" ext="dsk" index="1"/>
+      <list label="Disk prot.:" id="P" default="0">
+        <listentry label="None" value="0"/>
+        <listentry label="A:" value="1"/>
+        <listentry label="B:" value="2"/>
+        <listentry label="A: + B:" value="3"/>
+      </list>
+      <fileselector label="Tape:" ext="cdt;tzx" index="2"/>
+      <list label="Tape prot.:" id="U" default="1">
+        <listentry label="Off" value="0"/>
+        <listentry label="On" value="1"/>
+      </list>
+      <list label="Tape pol.:" id="T" default="0">
+        <listentry label="Normal" value="0"/>
+        <listentry label="Inverted" value="1"/>
+      </list>
+      <list label="FDC speed:" id="F" default="0">
+        <listentry label="Normal" value="0"/>
+        <listentry label="Fast" value="1"/>
+      </list>
+    </menu>
+    <menu label="ROMs">
+      <list label="AMSDOS:" id="A" default="0">
+        <listentry label="Off" value="0"/>
+        <listentry label="On" value="1"/>
+      </list>
+      <list label="Slot:" id="L" default="1">
+        <listentry label="0" value="0"/>
+        <listentry label="1" value="1"/>
+        <listentry label="2" value="2"/>
+        <listentry label="3" value="3"/>
+        <listentry label="4" value="4"/>
+        <listentry label="5" value="5"/>
+        <listentry label="6" value="6"/>
+        <listentry label="7" value="7"/>
+        <listentry label="8" value="8"/>
+        <listentry label="9" value="9"/>
+        <listentry label="10" value="10"/>
+        <listentry label="11" value="11"/>
+        <listentry label="12" value="12"/>
+        <listentry label="13" value="13"/>
+        <listentry label="14" value="14"/>
+        <listentry label="15" value="15"/>
+      </list>
+      <fileselector label="Load ROM:" ext="rom" index="3"/>
+      <button label="Clear slot" action="clear_slot"/>
+      <fileselector label="Load ROM-set:" ext="rom" index="4"/>
+      <button label="Remove ROM-set" action="clear_set"/>
+    </menu>
+    <menu label="Settings">
+      <list label="Model:" id="Y" default="0">
+        <listentry label="6128" value="0"/>
+        <listentry label="664" value="1"/>
+      </list>
+      <list label="H pos:" id="H" default="8">
+        <listentry label="-8" value="0"/>
+        <listentry label="-7" value="1"/>
+        <listentry label="-6" value="2"/>
+        <listentry label="-5" value="3"/>
+        <listentry label="-4" value="4"/>
+        <listentry label="-3" value="5"/>
+        <listentry label="-2" value="6"/>
+        <listentry label="-1" value="7"/>
+        <listentry label="0" value="8"/>
+        <listentry label="+1" value="9"/>
+        <listentry label="+2" value="10"/>
+        <listentry label="+3" value="11"/>
+        <listentry label="+4" value="12"/>
+        <listentry label="+5" value="13"/>
+        <listentry label="+6" value="14"/>
+        <listentry label="+7" value="15"/>
+      </list>
+      <list label="H lock:" id="S" default="1">
+        <listentry label="Off" value="0"/>
+        <listentry label="On" value="1"/>
+      </list>
+      <list label="Width:" id="X" default="1">
+        <listentry label="800 px" value="1"/>
+        <listentry label="720 px" value="0"/>
+      </list>
+      <list label="V pos:" id="Z" default="8">
+        <listentry label="-8" value="0"/>
+        <listentry label="-7" value="1"/>
+        <listentry label="-6" value="2"/>
+        <listentry label="-5" value="3"/>
+        <listentry label="-4" value="4"/>
+        <listentry label="-3" value="5"/>
+        <listentry label="-2" value="6"/>
+        <listentry label="-1" value="7"/>
+        <listentry label="0" value="8"/>
+        <listentry label="+1" value="9"/>
+        <listentry label="+2" value="10"/>
+        <listentry label="+3" value="11"/>
+        <listentry label="+4" value="12"/>
+        <listentry label="+5" value="13"/>
+        <listentry label="+6" value="14"/>
+        <listentry label="+7" value="15"/>
+      </list>
+      <list label="V lock:" id="C" default="0">
+        <listentry label="Off" value="0"/>
+        <listentry label="On" value="1"/>
+      </list>
+      <list label="V rate:" id="E" default="2">
+        <listentry label="1 row" value="0"/>
+        <listentry label="2 rows" value="1"/>
+        <listentry label="4 rows" value="2"/>
+        <listentry label="8 rows" value="3"/>
+        <listentry label="16 rows" value="4"/>
+      </list>
+      <list label="Monitor:" id="M" default="0">
+        <listentry label="Colour" value="0"/>
+        <listentry label="Green" value="1"/>
+      </list>
+      <list label="RGB out:" id="G" default="0">
+        <listentry label="Off (Hi-Z)" value="0"/>
+        <listentry label="On" value="1"/>
+      </list>
+      <list label="Tape sound:" id="N" default="0">
+        <listentry label="Off" value="0"/>
+        <listentry label="On" value="1"/>
+      </list>
+      <list label="Volume:" id="V" default="4">
+        <listentry label="0%" value="0"/>
+        <listentry label="25%" value="1"/>
+        <listentry label="50%" value="2"/>
+        <listentry label="75%" value="3"/>
+        <listentry label="100%" value="4"/>
+      </list>
+      <list label="DB9-Fire:" id="J" default="0">
+        <listentry label="swap Off" value="0"/>
+        <listentry label="swap On" value="1"/>
+      </list>
+      <list label="SDRAM wait:" id="W" default="1">
+        <listentry label="On" value="1"/>
+        <listentry label="Off (test)" value="0"/>
+      </list>
+      <button label="Save settings" action="save"/>
+    </menu>
+    <button label="Reset" action="reset_hide"/>
+    <button label="Cold boot" action="cold_reset_hide"/>
+    <button label="Factory boot" action="factory_reset_hide"/>
+  </menu>
+</config>

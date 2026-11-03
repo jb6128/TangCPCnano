@@ -15,6 +15,13 @@ module osd_u8g2 (
 	    
   input        hs,
   input        vs, 
+  // Grid mode (grid_en = 1): the OSD position is derived from the HDMI column / row counters (gx, gy) instead of
+  // the CPC sync (hs / vs), so it stays at a fixed place on the HDMI screen however a program moves HSync / VSync
+  // or changes the line / frame length. gx_off shifts the horizontal centre (512 - window centre column).
+  input        grid_en,
+  input [9:0]  gx,
+  input [9:0]  gy,
+  input [9:0]  gx_off,
   input [5:0]  r_in,
   input [5:0]  g_in,
   input [5:0]  b_in,
@@ -58,22 +65,31 @@ wire [5:0] osd_b = (tactive && osd_pix)?osd_pix_col:sactive?{4'b0000, b_in[5:4]}
 `define WIDTH 16   // OSD width in characters
 `define HEIGHT 8   // OSD height in characters
 
-wire [11:0] hstart = (hcntL/2)-8*`WIDTH*`SCALE/2;
-wire [9:0]  vstart = (vcntL/2)-8*`HEIGHT*`SCALE/2;
+// position counters: from the CPC sync (measured below) or, in grid mode, from the HDMI counters
+wire [10:0] gxs   = {1'b0, gx} + {1'b0, gx_off};            // wraps at 1024 (HDMI row = 1024 clocks)
+wire [10:0] gys   = {1'b0, gy} + 11'd24;                    // HDMI frame = 624 rows, window centre row 288 -> 312
+wire [9:0]  vc_g  = (gys >= 11'd624) ? (gys - 11'd624) : gys[9:0];
+wire [11:0] hcnt_u  = grid_en ? {2'b00, gxs[9:0]} : hcnt;
+wire [11:0] hcntL_u = grid_en ? 12'd1024 : hcntL;
+wire [9:0]  vcnt_u  = grid_en ? vc_g : vcnt;
+wire [9:0]  vcntL_u = grid_en ? 10'd624 : vcntL;
+
+wire [11:0] hstart = (hcntL_u/2)-8*`WIDTH*`SCALE/2;
+wire [9:0]  vstart = (vcntL_u/2)-8*`HEIGHT*`SCALE/2;
 
 // entire OSD area incl border
-wire	    hactive = hcnt >= hstart-`SCALE*`BORDER && hcnt < hstart+`SCALE*`BORDER+8*`WIDTH*`SCALE;
-wire	    vactive = vcnt >= vstart-`SCALE*`BORDER && vcnt < vstart+`SCALE*`BORDER+8*`HEIGHT*`SCALE;
+wire	    hactive = hcnt_u >= hstart-`SCALE*`BORDER && hcnt_u < hstart+`SCALE*`BORDER+8*`WIDTH*`SCALE;
+wire	    vactive = vcnt_u >= vstart-`SCALE*`BORDER && vcnt_u < vstart+`SCALE*`BORDER+8*`HEIGHT*`SCALE;
 assign      active = hactive && vactive;  
 
 // text area of OSD
-wire	    thactive = hcnt >= hstart && hcnt < hstart+8*`WIDTH*`SCALE;
-wire	    tvactive = vcnt >= vstart && vcnt < vstart+8*`HEIGHT*`SCALE;
+wire	    thactive = hcnt_u >= hstart && hcnt_u < hstart+8*`WIDTH*`SCALE;
+wire	    tvactive = vcnt_u >= vstart && vcnt_u < vstart+8*`HEIGHT*`SCALE;
 assign 	    tactive = thactive && tvactive;  
 
 // shadow area of OSD
-wire	    shactive = hcnt >= hstart-`SCALE*`BORDER+`SCALE*`SHADOW && hcnt < hstart+`SCALE*`BORDER+`SCALE*`SHADOW+8*`WIDTH*`SCALE;
-wire	    svactive = vcnt >= vstart-`SCALE*`BORDER+`SCALE*`SHADOW && vcnt < vstart+`SCALE*`BORDER+`SCALE*`SHADOW+8*`HEIGHT*`SCALE;
+wire	    shactive = hcnt_u >= hstart-`SCALE*`BORDER+`SCALE*`SHADOW && hcnt_u < hstart+`SCALE*`BORDER+`SCALE*`SHADOW+8*`WIDTH*`SCALE;
+wire	    svactive = vcnt_u >= vstart-`SCALE*`BORDER+`SCALE*`SHADOW && vcnt_u < vstart+`SCALE*`BORDER+`SCALE*`SHADOW+8*`HEIGHT*`SCALE;
 assign	    sactive = shactive && svactive;  
 
 // 1024 bytes = 8192 pixels = 128 x 64 pixels
@@ -116,9 +132,9 @@ always @(posedge clk) begin
    end
 end
    
-wire [7:0] hpix  = hcnt-hstart;  // horizontal pixel position inside OSD   
+wire [7:0] hpix  = hcnt_u-hstart;  // horizontal pixel position inside OSD   
 wire [7:0] hpixD = hpix+1;       // latch byte one pixel in advance
-wire [6:0] vpix  = vcnt-vstart;  // vertical pixel position inside OSD   
+wire [6:0] vpix  = vcnt_u-vstart;  // vertical pixel position inside OSD   
 
 assign osd_pix = buffer_byte[vpix[3:1]];
 

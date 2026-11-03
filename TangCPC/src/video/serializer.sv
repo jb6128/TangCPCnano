@@ -1,7 +1,14 @@
 `ifndef ALTERA_RESERVED_QIS
   `define GW_IDE
 `endif
-  
+
+// OSS CAD Suite flow (tools/build_oss.sh passes -D OSS_FLOW): yosys defines SYNTHESIS, which would
+// select the Xilinx OSERDESE2 branch below; the Gowin IDE does not define it, so the GW_IDE branch
+// (OSER10) is used there. Undefine it to get the same branch.
+`ifdef OSS_FLOW
+  `undef SYNTHESIS
+`endif
+
 module serializer
 #(
     parameter int NUM_CHANNELS = 3,
