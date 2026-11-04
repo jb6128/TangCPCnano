@@ -525,6 +525,7 @@ wire  [2:0] sys_vrate;                      // OSD "V rate": 1 << value rows per
 wire        vreset_any;                 // = vreset_pulse (full HDMI re-alignment; 'V pos' only loads the row counter, see below)
 wire        sys_rgbout;
 wire        sys_firesw;
+wire        sys_numpad;
 wire        sys_wide;
 wire        sys_tape_inv;
 wire  [7:0] core_audio_l, core_audio_r;
@@ -799,8 +800,12 @@ mcu_hid mcu_hid_inst (
 
 wire [79:0] bl616_key;
 
+// OSD 'Num Joystick' On: keypad 0..9 (HID 0x59..0x62) are the joystick and are removed from the
+// keyboard matrix (the PC keys F1..F10 are not affected).
+wire [127:0] hid_keyboard_m = sys_numpad ? (hid_keyboard & ~(128'h3FF << 7'h59)) : hid_keyboard;
+
 hid_cpc_matrix hid_cpc_matrix_inst (
-    .kb  ( hid_keyboard ),
+    .kb  ( hid_keyboard_m ),
     .key ( bl616_key    )
 );
 
@@ -872,7 +877,19 @@ wire db9_b0 = sys_firesw ? ~db9_ok[5] : ~db9_ok[0];
 wire db9_b1 = sys_firesw ? ~db9_ok[0] : ~db9_ok[5];
 wire [7:0] db9_joy = { 2'b00, db9_b1, db9_b0, ~db9_ok[2], ~db9_ok[1], ~db9_ok[4], ~db9_ok[3] };
 
-wire [7:0] joy_a = hid_joy0 | pico_joy0 | db9_joy;
+// OSD 'Num Joystick': keypad 8/2/4/6 = up/down/left/right, 7/9/1/3 = diagonals (two directions),
+// 5 = BTN1 (X, like FPGA pin 30), 0 = BTN0 (Z, like pin 27); not affected by the DB9 fire swap.
+// Format as joy_a: [0]=R [1]=L [2]=D [3]=U [4]=BTN0 [5]=BTN1.
+wire np_on = sys_numpad & kb_mask_cnt[26];
+wire np_u  = np_on & (hid_keyboard[7'h60] | hid_keyboard[7'h5F] | hid_keyboard[7'h61]);   // 8 7 9
+wire np_d  = np_on & (hid_keyboard[7'h5A] | hid_keyboard[7'h59] | hid_keyboard[7'h5B]);   // 2 1 3
+wire np_l  = np_on & (hid_keyboard[7'h5C] | hid_keyboard[7'h5F] | hid_keyboard[7'h59]);   // 4 7 1
+wire np_r  = np_on & (hid_keyboard[7'h5E] | hid_keyboard[7'h61] | hid_keyboard[7'h5B]);   // 6 9 3
+wire np_b1 = np_on & hid_keyboard[7'h5D];                                                 // 5 = BTN1
+wire np_b0 = np_on & hid_keyboard[7'h62];                                                 // 0 = BTN0
+wire [7:0] np_joy = { 2'b00, np_b1, np_b0, np_u, np_d, np_l, np_r };
+
+wire [7:0] joy_a = hid_joy0 | pico_joy0 | db9_joy | np_joy;
 wire [7:0] joy_b = hid_joy1 | pico_joy1;
 assign cpc_joy1 = { 1'b0, joy_a[4], joy_a[5], joy_a[3:0] };
 assign cpc_joy2 = { 1'b0, joy_b[4], joy_b[5], joy_b[3:0] };
@@ -923,6 +940,7 @@ sysctrl sysctrl_inst (
     .system_vrate        ( sys_vrate        ),
     .system_rgbout       ( sys_rgbout       ),
     .system_firesw       ( sys_firesw       ),
+    .system_numpad       ( sys_numpad       ),
     .system_wide         ( sys_wide         ),
     .system_model664     ( sys_model664     ),
     .system_hpos         ( sys_hpos         ),

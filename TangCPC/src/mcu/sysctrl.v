@@ -70,6 +70,7 @@ module sysctrl (
   output reg        system_waitgate,
   output reg        system_hlock,
   output reg        system_firesw,   // OSD id J: 1 = swap the two DB9 fire buttons
+  output reg        system_numpad,   // OSD id I: 1 = keypad 1-9 act as joystick (8/2/4/6 directions, 7/9/1/3 diagonals, 5 = Fire 2 / X, 0 = Fire 1 / Z)
   output reg        system_rgbout,   // OSD id G: 1 = drive the 15 kHz RGB/CSYNC pins, 0 = high-Z (default)
   output reg        system_vlock,    // OSD id C: HDMI frame length follows the CPC frame length
   output reg  [2:0] system_vrate,    // OSD id E: V lock / V pos: max. change of the HDMI frame length per frame, 1 << value rows (0..4, default 2 = 4 rows)
@@ -160,6 +161,7 @@ always @(posedge clk) begin
       system_vrate <= 3'd2;
       system_rgbout <= 1'b0;
       system_firesw <= 1'b0;
+      system_numpad <= 1'b0;
       system_wide <= 1'b0;
       system_model664 <= 1'b0;
       system_hpos <= 4'd8;
@@ -252,6 +254,7 @@ always @(posedge clk) begin
                   if(id == "V") system_volume <= (data_in[2:0] > 3'd4) ? 3'd4 : data_in[2:0];
                   if(id == "G") system_rgbout <= data_in[0];
                   if(id == "J") system_firesw <= data_in[0];
+                  if(id == "I") system_numpad <= data_in[0];
                   if(id == "D") system_wide <= data_in[0];
                   if(id == "Y") system_model664 <= data_in[0];
                   if(id == "H") system_hpos <= data_in[3:0];

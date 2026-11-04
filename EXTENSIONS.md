@@ -19,7 +19,7 @@ Added from other projects in this fork:
 
 | Area | What it does | Status |
 |---|---|---|
-| Keyboard | USB keyboard through the FPGA Companion. | works |
+| Keyboard | USB keyboard through the FPGA Companion. Optional `Num Joystick` (OSD, default Off): the numeric keypad acts as CPC joystick 1 (see the table below). | works |
 | DB9 joystick | CPC joystick 1 on the DB9 pins, optional fire-button swap. | works |
 | Floppy | `.dsk` images for drive A/B through the OSD, read and write, AMSDOS On/Off, disk write protection, FDC speed. | works |
 | Tape | `.cdt`/`.tzx` playback from SD, optional tape sound, polarity option. To rewind, reopen the file. | works |
@@ -48,15 +48,17 @@ All pins are 3.3 V LVCMOS. **Do not apply 5 V to any of them.**
 
 ### DB9 joystick (active low, internal pull-up)
 
-| Signal | Core bus | FPGA pin | DB9 pin |
-|---|---|---|---|
-| UP | `io[2]` | 25 | 1 |
-| RIGHT | `io[3]` | 26 | 4 |
-| BTN0 = Fire 1 | `io[0]` | 27 | - |
-| DOWN | `io[1]` | 28 | 2 |
-| LEFT | `io[4]` | 29 | 3 |
-| BTN1 = Fire 2 | `io[5]` | 30 | 6 |
-| GND | – | any GND | 8 |
+| Signal | Core bus | FPGA pin | DB9 pin | Num key |
+|---|---|---|---|---|
+| UP | `io[2]` | 25 | 1 | 8 |
+| RIGHT | `io[3]` | 26 | 4 | 6 |
+| BTN0 = Fire 1 | `io[0]` | 27 | - | 0 |
+| DOWN | `io[1]` | 28 | 2 | 2 |
+| LEFT | `io[4]` | 29 | 3 | 4 |
+| BTN1 = Fire 2 | `io[5]` | 30 | 6 | 5 |
+| GND | – | any GND | 8 | – |
+
+"Num key" applies when the OSD option `Num Joystick` is On: the keypad keys 8/2/4/6 are up/down/left/right, 7/9/1/3 are the diagonals (two directions at once), 5 and 0 are the fire buttons. With the option On, keypad 0–9 no longer type the CPC F-keys (the PC keys F1–F10 still do). Num Lock has no effect. The DB9 port keeps working in parallel. `DB9-Fire` (swap) only exchanges the two DB9 fire buttons, not the keypad keys.
 
 Note: Do not connect DB9 pin 5/7 (+5 V).
 

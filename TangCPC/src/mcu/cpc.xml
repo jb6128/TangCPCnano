@@ -31,6 +31,7 @@
       <set id="N" value="0"/>
       <set id="V" value="4"/>
       <set id="J" value="0"/>
+      <set id="I" value="0"/>
       <set id="W" value="1"/>
     </action>
 
@@ -228,6 +229,10 @@
       <list label="DB9-Fire:" id="J" default="0">
         <listentry label="swap Off" value="0"/>
         <listentry label="swap On" value="1"/>
+      </list>
+      <list label="Num Joystick:" id="I" default="0">
+        <listentry label="Off" value="0"/>
+        <listentry label="On" value="1"/>
       </list>
       <list label="SDRAM wait:" id="W" default="1">
         <listentry label="On" value="1"/>
