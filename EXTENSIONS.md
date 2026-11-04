@@ -71,13 +71,26 @@ Note: Do not connect DB9 pin 5/7 (+5 V).
 
 Right header: 72, 71 | 55, 49 (GND next to them); left header: 73, 74 and 77. Drive 8 mA. Notes: pin 49 is also `LCD_BL` (do not attach an LCD to the FPC socket); pin 55 is also `I2S_LRCK` of the on-board audio amplifier (harmless while `PA_EN` is not driven). The pins are high impedance until the OSD option `RGB out` is set to On.
 
-Pins are 3V3. Connect CSYNC through a 220 Ω resistor and the colour pins through a 2-bit DAC
+Pins are 3V3. Connect CSYNC through a 220 Ω resistor and the colour pins through a 2-bit DAC:
 ```
 FPGA bit 1 pin ──[ R ]──┐
-                        ├──●── colour output ──► monitor input (75 Ω to GND)
+                        ├──●── colour output ──► monitor input (75 or 100 Ω to GND)
 FPGA bit 0 pin ──[ R ]──┘
 ```
-Two equal resistors per colour (thermometer coding), R = 470–560 Ω into a 75 Ω input: 470 Ω ≈ 0.8 V, 499 Ω ≈ 0.75 V, 560 Ω ≈ 0.7 V full-scale (calculated for 3.3 V pins). Lower R = brighter picture.
+Two equal resistors per colour (thermometer coding).
+Full-scale level, calculated for 3.3 V pins:
+
+| R     | 75 Ω input | 100 Ω input |
+|-------|------------|-------------|
+| 470 Ω | 0.80 V     | 0.99 V      |
+| 499 Ω | 0.76 V     | 0.94 V      |
+| 560 Ω | 0.70 V     | 0.88 V      |
+
+The mid level is exactly half of full-scale.
+According to the CPC6128 Service Manual, the Amstrad CTM644 colour monitor
+has 100 Ω input termination (DC coupled, 0 V = black). A real CPC delivers
+roughly 1 V full-scale, so R = 470 Ω is a good choice for the original
+monitor, and also fine for 75 Ω RGB-to-HDMI converters (about 0.8 V).
 
 ## Known limitations
 
