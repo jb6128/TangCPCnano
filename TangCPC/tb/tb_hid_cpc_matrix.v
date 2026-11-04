@@ -79,9 +79,15 @@ module tb_hid_cpc_matrix;
         press_one(7'h57, cell(3,4) | cell(2,5));        // KP+  = Shift + ;
         press_one(7'h55, cell(3,5) | cell(2,5));        // KP*  = Shift + :
 
+        // second keys for COPY and ]: left Alt / Mac Option, ISO '#' key
+        press_one(7'h6A, cell(1,1));                    // LAlt = COPY
+        press_one(7'h49, cell(1,1));                    // Insert = COPY
+        press_one(7'h32, cell(2,3));                    // ISO '#' = ]
+        press_one(7'h31, cell(2,3));                    // US backslash = ]
+
         // keys without a CPC counterpart do nothing
         press_one(7'h65, 80'd0);                        // Application
-        press_one(7'h6A, 80'd0);                        // LAlt
+        press_one(7'h6E, 80'd0);                        // RAlt (AltGr)
         press_one(7'h6B, 80'd0);                        // LGUI
 
         // two keys at once: both appear, nothing else

@@ -40,7 +40,7 @@ Press **F12** to open the on-screen menu. Settings are stored with Settings → 
 
 A ROM set is a single .rom file: you can concatenate up to 16 ROM images (16 KB each) into one file of at most 256 KB. Block n is loaded into upper ROM slot n. Example: `copy /b a.rom+b.rom+c.rom set.rom` (Windows) or `cat a.rom b.rom c.rom > set.rom` (Linux).
 
-Note: block 0 replaces the BASIC ROM (slot 0) and block 7 the AMSDOS ROM (slot 7). Remove ROM-set or Clear slot brings back the original ROMs from the flash.
+Note: block 0 replaces the BASIC ROM (slot 0) and block 7 the AMSDOS ROM (slot 7). `Remove ROM-set` or `Clear slot` brings back the original ROMs from the flash.
 
 ## Pin assignments (FPGA pin numbers, Tang Nano 20K, `constraint/TangCPC.cst`)
 

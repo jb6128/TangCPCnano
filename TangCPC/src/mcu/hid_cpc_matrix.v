@@ -48,7 +48,7 @@ module hid_cpc_matrix (
 
     // ---- Row 1 : Left, COPY, F7 F8 F5 F1 F2 F0 ------------------------------
     assign key[1*8+0] = kb[7'h50];                                   // Left
-    assign key[1*8+1] = kb[7'h49];                                   // COPY (Insert)
+    assign key[1*8+1] = kb[7'h49] | kb[7'h6A];                       // COPY (Insert, left Alt / Mac Option)
     assign key[1*8+2] = kb[7'h40] | kb[7'h5F];                       // F7  (F7, KP7)
     assign key[1*8+3] = kb[7'h41] | kb[7'h60];                       // F8  (F8, KP8)
     assign key[1*8+4] = kb[7'h3E] | kb[7'h5D];                       // F5  (F5, KP5)
@@ -60,7 +60,7 @@ module hid_cpc_matrix (
     assign key[2*8+0] = kb[7'h4C];                                   // CLR (Delete)
     assign key[2*8+1] = kb[7'h30];                                   // [   (HID ']')
     assign key[2*8+2] = kb[7'h28] | kb[7'h58];                       // RETURN (Enter, KP Enter)
-    assign key[2*8+3] = kb[7'h31];                                   // ]   (HID '\')
+    assign key[2*8+3] = kb[7'h31] | kb[7'h32];                       // ]   (HID '\' US, '#' on ISO DE/UK)
     assign key[2*8+4] = kb[7'h3D] | kb[7'h5C];                       // F4  (F4, KP4)
     assign key[2*8+5] = kb[7'h69] | kb[7'h6D] | kb[7'h57] | kb[7'h55]; // SHIFT (L, R, KP+, KP*)
     assign key[2*8+6] = kb[7'h64];                                   // \   (non-US '<>')
