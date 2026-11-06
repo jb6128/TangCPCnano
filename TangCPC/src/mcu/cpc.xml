@@ -20,6 +20,8 @@
       <set id="F" value="0"/>
       <set id="L" value="1"/>
       <set id="A" value="0"/>
+      <set id="O" value="0"/>
+      <set id="o" value="0"/>
       <set id="H" value="8"/>
       <set id="X" value="1"/>
       <set id="Z" value="8"/>
@@ -123,6 +125,14 @@
       <list label="AMSDOS:" id="A" default="0">
         <listentry label="Off" value="0"/>
         <listentry label="On" value="1"/>
+      </list>
+      <list label="ROM0:" id="O" default="0">
+        <listentry label="INT" value="0"/>
+        <listentry label="EXT" value="1"/>
+      </list>
+      <list label="ROM7:" id="o" default="0">
+        <listentry label="INT" value="0"/>
+        <listentry label="EXT" value="1"/>
       </list>
       <list label="Slot:" id="L" default="1">
         <listentry label="0" value="0"/>

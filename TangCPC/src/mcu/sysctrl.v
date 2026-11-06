@@ -19,7 +19,9 @@
   "E"  V lock / V pos speed: largest change of the HDMI frame length per frame, 1, 2, 4, 8, 16 rows (0..4, default 2)
   "Z"  vertical picture position 0..15 (label -8..+7, 16 HDMI rows per step, default 8 = 0)
   "Q"  remove the ROM set (level, rising edge acts)
-  "A"  AMSDOS ROM (slot 7) visible: off(0), on(1)
+  "A"  internal AMSDOS ROM (slot 7) visible: off(0), on(1)
+  "O"  ROM0: internal BASIC (0) / external ROM in slot 0 (1)
+  "o"  ROM7: internal DOS (0) / external ROM in slot 7 (1)
   "W"  Z80 waits for SDRAM data: off(0, test only), on(1)
   "H"  horizontal picture position 0..8 (h_offset = 192 + 32*value, default 4)
   "T"  invert the tape input signal: normal(0), inverted(1)
@@ -67,6 +69,8 @@ module sysctrl (
   output reg        system_rom_clear,
   output reg        system_rom_clearset,
   output reg        system_amsdos,
+  output reg        system_rom0_ext, // OSD id O: 0 = internal BASIC ROM (slot 0), 1 = external ROM 0 when one is loaded (at the next reset)
+  output reg        system_rom7_ext, // OSD id o: 0 = internal DOS ROM (slot 7), 1 = external ROM 7 when one is loaded
   output reg        system_waitgate,
   output reg        system_hlock,
   output reg        system_firesw,   // OSD id J: 1 = swap the two DB9 fire buttons
@@ -151,6 +155,8 @@ always @(posedge clk) begin
       system_rom_clear <= 1'b0;
       system_rom_clearset <= 1'b0;
       system_amsdos <= 1'b0;
+      system_rom0_ext <= 1'b0;
+      system_rom7_ext <= 1'b0;
       system_waitgate <= 1'b1;
       system_hlock <= 1'b1;
       system_mono <= 1'b0;
@@ -247,6 +253,8 @@ always @(posedge clk) begin
                   if(id == "K") system_rom_clear <= data_in[0];
                   if(id == "Q") system_rom_clearset <= data_in[0];
                   if(id == "A") system_amsdos <= data_in[0];
+                  if(id == "O") system_rom0_ext <= data_in[0];
+                  if(id == "o") system_rom7_ext <= data_in[0];
                   if(id == "W") system_waitgate <= data_in[0];
                   if(id == "S") system_hlock <= data_in[0];
                   if(id == "M") system_mono <= data_in[0];

@@ -24,7 +24,7 @@ Added from other projects in this fork:
 | Floppy | `.dsk` images for drive A/B through the OSD, read and write, AMSDOS On/Off, disk write protection, FDC speed. | works |
 | Tape | `.cdt`/`.tzx` playback from SD, optional tape sound, polarity option. To rewind, reopen the file. | works |
 | Tape recording | `SAVE` is recorded into the mounted CDT (OSD `Tape prot.` = Off). The image must be a pre-made blank tape of at least 1 MB (`tools/make_blank_tape.py tape.cdt 1024`). | works |
-| Upper ROM slots | Up to 16 slots in the OSD: single ROM files (16k), 16-slot ROM sets (256k), clear slot, restore of the flash AMSDOS/BASIC, loading without a reset. A progress bar is shown while ROMs load. | works |
+| Upper ROM slots | Up to 16 slots in the OSD: single ROM files (16k), 16-slot ROM sets (256k), clear slot. A progress bar is shown while ROMs load. Slots 0 (BASIC) and 7 (DOS) have an internal (flash) and, optionally, an external ROM. | works |
 | Models | CPC 6128 (default) and 664. | experimental |
 | HDMI video | 720×576p50 through a scandoubler, H pos / V pos, H lock, V lock (with selectable correction rate), 800 or 720 px width, green monitor mode, volume. OSD is fixed to the HDMI raster. | works (V lock: demos with changing video modes can still show dropouts) |
 | System clock | Exact 32.000 MHz system clock (PLL cascade 27 → 96 → 160 MHz), so the CPC runs at its real speed and pixel clock. | works |
@@ -40,7 +40,7 @@ Press **F12** to open the on-screen menu. Settings are stored with Settings → 
 
 A ROM set is a single .rom file: you can concatenate up to 16 ROM images (16 KB each) into one file of at most 256 KB. Block n is loaded into upper ROM slot n. Example: `copy /b a.rom+b.rom+c.rom set.rom` (Windows) or `cat a.rom b.rom c.rom > set.rom` (Linux).
 
-Note: block 0 replaces the BASIC ROM (slot 0) and block 7 the AMSDOS ROM (slot 7). `Remove ROM-set` or `Clear slot` brings back the original ROMs from the flash.
+Note: OSD options ROM0/ROM7 select INT or EXT BASIC/DOS ROMs.
 
 ## Pin assignments (FPGA pin numbers, Tang Nano 20K, `constraint/TangCPC.cst`)
 

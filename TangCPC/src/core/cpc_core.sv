@@ -24,7 +24,9 @@
       CDC       : 2-FF synchroniseurs pour busy/ready (flash_clk → clk32)
 */
 
-module cpc_core (
+module cpc_core #(
+    parameter FLASH_READ_DELAY = 0   // sampling point of the flash data, see cpc_flash.v (0 = upstream default, 1 = one SPI clock later)
+) (
     // Horloges
     input           clk32,          // 32 MHz système
     input           flash_clk,      // 100 MHz flash SPI
@@ -104,6 +106,7 @@ module cpc_core (
     // rom_map[N] = 1 si ROM extension N est présente en SDRAM
     // -----------------------------------------------------------------------
     input  [255:0]  rom_map,
+    input  [1:0]    rom_ext,        // {7, 0}: external upper ROM 7 / 0 in use (OSD ROM7/ROM0 = EXT and a ROM loaded)
 
     // -----------------------------------------------------------------------
     // Sorties vidéo Amstrad_motherboard (Phase 3b — exposées, Phase 3d actives)
@@ -157,7 +160,8 @@ module cpc_core (
     output reg [7:0] rb_byte,       // valeur brute lue lors du readback ROM
     output reg [15:0] dbg_first_flash_word, // premier mot flash lu (doit être 0x0189)
     output reg      flash_retry,    // sticky: a flash word differed between two reads (re-read at least once)
-    output reg      flash_err       // sticky: a flash word never gave two equal reads (gave up)
+    output reg      flash_err,      // sticky: a flash word never gave two equal reads (gave up)
+    output reg [15:0] flash_retry_cnt // number of flash words whose two reads differed during the boot copy (saturating)
 );
 
 // ---------------------------------------------------------------------------
@@ -203,7 +207,11 @@ wire por_f = por_fs[1];
 reg  [21:0]  flash_addr;
 reg          flash_cs;
 
-flash flash_inst (
+// Flash read experiment: sampling point of the flash data (FLASH_READ_DELAY: 0 = upstream default,
+// 1 = one SPI clock later = this core up to 12df7b9); the phase of the SPI pin clock is the PSDA of flash_pll.
+// Both are set in top.sv (FLASH_PSDA / FLASH_READ_DELAY).
+
+flash #(.READ_DELAY(FLASH_READ_DELAY)) flash_inst (
     .clk        ( flash_clk   ),
     .resetn     ( ~por_f      ),
     .ready      ( flash_ready ),
@@ -279,6 +287,10 @@ reg first_latch_captured;  // 1 après capture du premier flash_dout
 reg model_r = 1'b0;
 always @(posedge clk32) if (~boot_done_r | (|sys_reset)) model_r <= model664;
 
+// Likewise the choice internal / external ROM 0 and 7 (the upper ROM must not change under a running CPU)
+reg [1:0] rom_ext_r = 2'b00;
+always @(posedge clk32) if (~boot_done_r | (|sys_reset)) rom_ext_r <= rom_ext;
+
 wire boot_rst = por | cold_boot;
 always @(posedge clk32) begin
     flash_cs <= 1'b0;   // défaut
@@ -300,6 +312,7 @@ always @(posedge clk32) begin
         first_latch_captured <= 1'b0;
         flash_retry     <= 1'b0;
         flash_err       <= 1'b0;
+        flash_retry_cnt <= 16'd0;
         v_cnt           <= 4'd0;
     end else begin
         // Latch état maximum atteint par la FSM (debug)
@@ -385,6 +398,7 @@ always @(posedge clk32) begin
                     state <= ST_WR_LO;
                 end else begin
                     flash_retry <= 1'b1;
+                    if (flash_retry_cnt != 16'hFFFF) flash_retry_cnt <= flash_retry_cnt + 16'd1;
                     word_latch  <= flash_dout;
                     if (v_cnt == 4'd15) begin
                         flash_err <= 1'b1;
@@ -654,6 +668,7 @@ Amstrad_motherboard mb (
 
     // ROM map — depuis boot loader
     .rom_map        ( rom_map       ),
+    .rom_ext        ( rom_ext_r     ),
     .ram64k         ( model_r       ),  // 664: 64 KB (RAM bank switching ignored)
     .model664       ( model_r       ),  // 664: OS/BASIC from the 664 set
 

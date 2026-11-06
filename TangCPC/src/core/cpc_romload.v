@@ -8,15 +8,17 @@
 //   The slot is then marked in rom_map, which the MMU uses to accept the
 //   upper-ROM select (&DF00).  Selecting an empty file / "Clear slot" removes it.
 //
-//   Reset values: slot 0 (BASIC) and slot 7 (AMSDOS) are present; they come
-//   from the flash at power-up. Slot 7 is only visible while the OSD option
-//   "AMSDOS" is On (default Off: AMSDOS hangs the boot if the FDC misbehaves). Slots 0 and 7 can be overwritten by a file but
-//   not cleared (the flash copy would be gone). Other slots: 1..6, 8..31.
+//   Slots 0 (BASIC) and 7 (DOS) have an INTERNAL ROM (flash copy, loaded by the boot loader of
+//   cpc_core, never touched here) and an optional EXTERNAL ROM. The external ROMs live in their own
+//   SDRAM areas (slot 0 at 0x480000, slot 7 at 0x484000); present[0] / present[7] mean "external ROM
+//   loaded". The OSD options ROM0 / ROM7 (rom0_ext / rom7_ext: 0 = INT, 1 = EXT) choose the source:
+//   EXT with a loaded external ROM -> the external one (ext_sel), otherwise the internal one.
+//   Slot 7 is visible to the CPC when the external ROM is used or the OSD option "AMSDOS" is On
+//   (rom_map[7]); Off and no external ROM = no DOS (tape only). Slots 1..6 and 8..31 as before.
 //
 //   ROM SET (image 4, "ROM set:" in the OSD): one file with up to 16 consecutive 16 KB blocks;
-//   block n goes to slot n. Block 0 is ignored (BASIC from flash). An all-0x00 / all-0xFF
-//   block is empty and leaves the slot alone. Block 7 replaces the flash AMSDOS only if it
-//   holds a ROM (checked in a scan pass first, so AMSDOS is never overwritten by an empty block).
+//   block n goes to slot n (block 0 / 7 into the external slot 0 / 7). An all-0x00 / all-0xFF
+//   block is empty and leaves the slot alone.
 //   Slots loaded individually through image 3 have priority: the set never overwrites them
 //   (flag `indiv`, cleared by "Clear slot" and cold boot), whatever the order of the two mounts.
 //
@@ -36,7 +38,9 @@ module cpc_romload (
     input  wire  [4:0] slot,            // slot chosen in the OSD (latched at mount)
     input  wire        clear,           // level from OSD button; rising edge clears the slot
     input  wire        clear_set,       // level from OSD button; rising edge removes the ROM set
-    input  wire        amsdos_en,       // OSD: slot 7 (AMSDOS) visible to the MMU
+    input  wire        amsdos_en,       // OSD: internal slot 7 (AMSDOS) visible to the MMU
+    input  wire        rom0_ext,        // OSD ROM0: 1 = use the external slot-0 ROM when one is loaded
+    input  wire        rom7_ext,        // OSD ROM7: 1 = use the external slot-7 ROM when one is loaded
 
     input  wire        boot_idle,       // SDRAM boot port free
     input  wire        forget,          // Factory boot: nothing is loaded at the next release (mounts stay remembered)
@@ -57,18 +61,17 @@ module cpc_romload (
     input  wire        ram_ack,
 
     output wire [255:0] rom_map,
+    output wire  [1:0] ext_sel,         // {slot 7, slot 0}: the MMU reads the external ROM (SDRAM 0x484000 / 0x480000)
     output wire        busy,
-    output wire        restore,         // pulse: reload the flash ROMs (BASIC/AMSDOS) through the boot loader
     output wire  [4:0] prog             // load progress for the start-up bar: cells 0..16 (slots done)
 );
     //------------------------------------------------------------------------
     // slot map
     //------------------------------------------------------------------------
-    reg [31:0] present;
-    // slot 7 is hidden only while it still holds the flash AMSDOS and the OSD
-    // option is Off; a ROM file loaded into slot 7 (ext7) is always visible.
-    reg ext7;
-    assign rom_map = {224'd0, present[31:8], present[7] & (amsdos_en | ext7), present[6:0]};
+    reg [31:0] present;                   // slot holds a loaded ROM (0 / 7: the EXTERNAL ROM)
+    assign ext_sel = {rom7_ext & present[7], rom0_ext & present[0]};
+    // slot 0: the internal BASIC is always there; slot 7: visible with an external ROM in use or AMSDOS On
+    assign rom_map = {224'd0, present[31:8], ext_sel[1] | amsdos_en, present[6:1], 1'b1};
 
     reg clearD;
     wire clear_edge = clear & ~clearD;
@@ -105,7 +108,6 @@ module cpc_romload (
 
     // ROM set state
     reg         setmode;                  // current job is a ROM set
-    reg         scan;                     // scan pass (slot 7): read only, no SDRAM write
     reg         nonempty;                 // block holds data other than 0x00 / 0xFF
     reg  [4:0]  blk;                      // block (= slot) in the set (5 bit: reaches nblk = 16)
     reg  [4:0]  nblk;                     // number of blocks in the file (max 16)
@@ -121,10 +123,6 @@ module cpc_romload (
     assign prog = setmode ? blk : (state != S_IDLE) ? ((slot_l >= 5'd16) ? 5'd16 : slot_l + 5'd1) : 5'd0;
     reg resetD = 1'b1;
     reg skip_rearm = 1'b0;
-    // slot 0 / 7 hold a ROM file instead of the flash copy -> clearing them reloads the flash ROMs
-    reg dirty0 = 1'b0, dirty7 = 1'b0;
-    reg restore_p = 1'b0;
-    assign restore = restore_p;
     reg  [5:0]  k;                // sector index
     reg  [8:0]  i;                // byte index in the sector
 
@@ -132,7 +130,9 @@ module cpc_romload (
     wire [15:0] f_end   = {8'd0, skip} + {1'b0, nbytes};
     wire        in_rng  = (f >= {8'd0, skip}) && (f < f_end);
     wire [15:0] off     = f - {8'd0, skip};
-    wire        protectd = (slot_l == 5'd0) || (slot_l == 5'd7);
+    // SDRAM address of the slot: 0x400000 + slot * 0x4000, except the external slots 0 / 7 (own areas)
+    wire [22:0] sbase   = (slot_l == 5'd0) ? 23'h480000 :
+                          (slot_l == 5'd7) ? 23'h484000 : (23'h400000 + {slot_l, 14'd0});
 
     wire [31:0] avail   = size_l - {24'd0, skip};
 
@@ -140,44 +140,30 @@ module cpc_romload (
         clearD <= clear;
         clearsetD <= clear_set;
         if (reset) begin
-            present <= 32'h0000_0081;          // BASIC (0) and AMSDOS (7) from flash
-            ext7 <= 1'b0; fromset <= 32'd0; clearsetD <= 1'b0; dirty0 <= 1'b0; dirty7 <= 1'b0; restore_p <= 1'b0;
+            present <= 32'd0;                  // no external ROM; internal BASIC / AMSDOS come from the flash
+            fromset <= 32'd0; clearsetD <= 1'b0;
             state <= S_IDLE; sd_rd <= 1'b0; sd_lba <= 32'd0; ram_req <= 1'b0;
             ram_addr <= 23'd0; ram_din <= 8'd0; clearD <= 1'b0;
             slot_l <= 5'd0; size_l <= 32'd0; skip <= 8'd0; nbytes <= 15'd0;
             nsec <= 6'd0; k <= 6'd0; i <= 9'd0; rd_addr <= 9'd0;
-            setmode <= 1'b0; scan <= 1'b0; nonempty <= 1'b0; blk <= 5'd0; nblk <= 5'd0; indiv <= 32'd0;
+            setmode <= 1'b0; nonempty <= 1'b0; blk <= 5'd0; nblk <= 5'd0; indiv <= 32'd0;
         end else begin
             ram_req <= 1'b0;
-            restore_p <= 1'b0;
 
-            // clear button (only while no load is in progress)
-            if (clear_edge && state == S_IDLE && slot != 5'd0 && slot != 5'd7) begin
+            // clear button (only while no load is in progress); slot 0 / 7: removes the external ROM only,
+            // the internal BASIC / AMSDOS are separate and stay
+            if (clear_edge && state == S_IDLE) begin
                 present[slot] <= 1'b0;
                 indiv[slot]   <= 1'b0;
                 fromset[slot] <= 1'b0;
             end
-            // Remove ROM set: all slots filled by the set go away (slot 0 and 7 stay: flash copies;
-            // a set block in slot 7 stays until the next cold boot). The set is forgotten.
+            // Remove ROM set: all slots filled by the set go away (also external slots 0 / 7).
+            // The set is forgotten.
             if (clearset_edge && state == S_IDLE) begin
-                present <= present & ~(fromset & ~32'h0000_0081);
+                present <= present & ~fromset;
                 fromset <= 32'd0;
                 pend_set <= 1'b0;
                 sz_set <= 32'd0;
-                if (fromset[7]) begin restore_p <= 1'b1; dirty7 <= 1'b0; ext7 <= 1'b0; end
-            end
-            // slot 7 cannot be emptied (the flash AMSDOS would be gone) but a file in
-            // it stops being forced visible; the OSD AMSDOS option governs it again.
-            // A cold boot reloads the flash copy.
-            if (clear_edge && state == S_IDLE && slot == 5'd7) begin
-                ext7 <= 1'b0;
-                indiv[7] <= 1'b0;
-                fromset[7] <= 1'b0;
-                if (dirty7) begin restore_p <= 1'b1; dirty7 <= 1'b0; end   // original AMSDOS back
-            end
-            if (clear_edge && state == S_IDLE && slot == 5'd0) begin
-                indiv[0] <= 1'b0;
-                if (dirty0) begin restore_p <= 1'b1; dirty0 <= 1'b0; end   // original BASIC back
             end
 
             case (state)
@@ -190,12 +176,11 @@ module cpc_romload (
                     state    <= S_PREP;
                 end else if (pend_set && sz_set == 32'd0) begin   // empty selection (NoDisk) = remove the set
                     pend_set <= 1'b0;
-                    present <= present & ~(fromset & ~32'h0000_0081);
+                    present <= present & ~fromset;
                     fromset <= 32'd0;
-                    if (fromset[7]) begin restore_p <= 1'b1; dirty7 <= 1'b0; ext7 <= 1'b0; end
                 end else if (pend_set) begin               // ROM set (image 4); replaces a set loaded before
                     pend_set <= 1'b0;
-                    present <= present & ~(fromset & ~32'h0000_0081);
+                    present <= present & ~fromset;
                     fromset <= 32'd0;
                     setmode  <= 1'b1;
                     size_l   <= sz_set;
@@ -204,29 +189,25 @@ module cpc_romload (
                     state    <= S_SETNEXT;
                 end
 
-            // next block of the ROM set: block 0 and individually loaded slots are skipped
+            // next block of the ROM set: individually loaded slots are skipped
             S_SETNEXT: begin
                 if (blk >= nblk) begin
                     setmode <= 1'b0;
                     state   <= S_IDLE;
-                end else if (blk == 5'd0 || indiv[blk]) begin
+                end else if (indiv[blk]) begin
                     blk <= blk + 5'd1;
                 end else begin
                     slot_l   <= blk;
                     skip     <= 8'd0;
                     nonempty <= 1'b0;
-                    scan     <= (blk == 5'd7);             // AMSDOS slot: look first, write only if not empty
                     state    <= S_WAITB;
                 end
             end
 
             S_PREP: begin
                 if (size_l == 32'd0) begin                 // empty selection = eject
-                    if (!protectd) present[slot_l] <= 1'b0;
-                    if (slot_l == 5'd7 && dirty7) begin restore_p <= 1'b1; dirty7 <= 1'b0; end
-                    if (slot_l == 5'd0 && dirty0) begin restore_p <= 1'b1; dirty0 <= 1'b0; end
+                    present[slot_l] <= 1'b0;
                     indiv[slot_l] <= 1'b0;
-                    if (slot_l == 5'd7) ext7 <= 1'b0;
                     state <= S_IDLE;
                 end else begin
                     skip   <= (size_l == 32'd16512) ? 8'd128 : 8'd0;
@@ -255,8 +236,8 @@ module cpc_romload (
             S_RD2: state <= S_CHK;
             S_CHK: begin
                 if (in_rng && setmode && mem_q != 8'h00 && mem_q != 8'hFF) nonempty <= 1'b1;
-                if (in_rng && !scan) begin
-                    ram_addr <= 23'h400000 + {slot_l, 14'd0} + {7'd0, off};
+                if (in_rng) begin
+                    ram_addr <= sbase + {7'd0, off};
                     ram_din  <= mem_q;
                     ram_req  <= 1'b1;
                     state    <= S_ACK;
@@ -282,17 +263,10 @@ module cpc_romload (
                     present[slot_l] <= 1'b1;
                     indiv[slot_l]   <= 1'b1;
                     fromset[slot_l] <= 1'b0;
-                    if (slot_l == 5'd7) begin ext7 <= 1'b1; dirty7 <= 1'b1; end
-                    if (slot_l == 5'd0) dirty0 <= 1'b1;
                     state <= S_IDLE;
-                end else if (scan) begin                   // scan pass done
-                    scan <= 1'b0;
-                    if (nonempty) state <= S_WAITB;        // write pass
-                    else begin blk <= blk + 5'd1; state <= S_SETNEXT; end
                 end else begin                             // block written
                     present[slot_l] <= nonempty;
                     if (nonempty) fromset[slot_l] <= 1'b1;
-                    if (slot_l == 5'd7) begin ext7 <= nonempty; if (nonempty) dirty7 <= 1'b1; end
                     blk   <= blk + 5'd1;
                     state <= S_SETNEXT;
                 end

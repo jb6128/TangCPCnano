@@ -31,6 +31,7 @@ module Amstrad_MMU
 	input        model664,
 	input        romen_n,
 	input [255:0]rom_map,
+	input [1:0]  rom_ext,       // {7, 0}: external upper ROM 7 / 0 in use (own SDRAM areas 0x484000 / 0x480000)
 
 	input        io_WR,
 
@@ -68,7 +69,9 @@ end
 
 always @(*) begin
 	casex({romen_n, RAMmap, A[15:14]})
-		'b0_xxx_xx: ram_A[22:14] = A[15] ? ((model664 && ROMbank == 8'h00) ? 9'h002 : {1'b1, ROMbank})   // upper rom (664: BASIC at 0x008000)
+		'b0_xxx_xx: ram_A[22:14] = A[15] ? ((ROMbank == 8'h00 && rom_ext[0]) ? 9'h120 :                    // upper rom 0: external BASIC (0x480000)
+		                                    (ROMbank == 8'h07 && rom_ext[1]) ? 9'h121 :                    // upper rom 7: external DOS (0x484000)
+		                                    (model664 && ROMbank == 8'h00)   ? 9'h002 : {1'b1, ROMbank})  // internal; 664: BASIC at 0x008000
 		                                 : (model664 ? 9'h001 : 9'h000);                                 // lower rom (664: OS at 0x004000)
 		'b1_0x1_11,                                               // map1&3 bank3
 		'b1_010_xx: ram_A[22:14] = {2'b00, RAMpage,    A[15:14]}; // map2   bank0-3 (ext  0..3)

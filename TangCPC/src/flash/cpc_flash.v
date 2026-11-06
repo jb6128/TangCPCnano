@@ -36,6 +36,12 @@ module flash
  output reg	   busy
 );
 
+// Sampling point of the read data, in SPI clocks after the nominal one: 0 = states 24..31 (upstream
+// default, NanoMig on the Tang Nano 20K at 85.5 MHz), 1 = states 25..32 (one clock later; this core up to 12df7b9).
+// Together with the phase of the SPI pin clock (flash_pll PSDA_SEL) it decides where inside the
+// valid-data window of the flash the data are sampled.
+parameter READ_DELAY = 1;
+
 reg		   dspi_mode;
 
 wire [1:0]	   dspi_out;
@@ -139,17 +145,17 @@ always @(posedge clk or negedge resetn) begin
             dspi_mode <= 1'b1;
 
         // latch output
-        if(state == 6'd25) dout[15:14] <= dspi_in;
-        if(state == 6'd26) dout[13:12] <= dspi_in;
-        if(state == 6'd27) dout[11:10] <= dspi_in;
-        if(state == 6'd28) dout[9:8]   <= dspi_in;
-        if(state == 6'd29) dout[7:6]   <= dspi_in;
-        if(state == 6'd30) dout[5:4]   <= dspi_in;
-        if(state == 6'd31) dout[3:2]   <= dspi_in;
-        if(state == 6'd32) dout[1:0]   <= dspi_in;
+        if(state == 6'd24+READ_DELAY) dout[15:14] <= dspi_in;
+        if(state == 6'd25+READ_DELAY) dout[13:12] <= dspi_in;
+        if(state == 6'd26+READ_DELAY) dout[11:10] <= dspi_in;
+        if(state == 6'd27+READ_DELAY) dout[9:8]   <= dspi_in;
+        if(state == 6'd28+READ_DELAY) dout[7:6]   <= dspi_in;
+        if(state == 6'd29+READ_DELAY) dout[5:4]   <= dspi_in;
+        if(state == 6'd30+READ_DELAY) dout[3:2]   <= dspi_in;
+        if(state == 6'd31+READ_DELAY) dout[1:0]   <= dspi_in;
 
         // signal that the transfer is done
-        if(state == 6'd32) begin
+        if(state == 6'd31+READ_DELAY) begin
             state <= 6'd0;	    
             busy <= 1'b0;
             mspi_cs <= 1'b1;	// deselect flash chip	 

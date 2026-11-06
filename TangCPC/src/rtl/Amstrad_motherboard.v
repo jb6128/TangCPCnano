@@ -69,6 +69,7 @@ module Amstrad_motherboard
 	output reg [14:0] vram_addr,
 
 	input [255:0] rom_map,
+	input [1:0]   rom_ext,      // {7, 0}: external upper ROM 7 / 0 in use
 	input         ram64k,
 	input         model664,     // 1 = 664 ROM set (lower ROM and upper ROM 0 at other SDRAM addresses)
 	output [22:0] mem_addr,
@@ -288,6 +289,7 @@ Amstrad_MMU MMU
 	.model664(model664),
 	.romen_n(romen_n),
 	.rom_map(rom_map),
+	.rom_ext(rom_ext),
 	.A(A),
 	.D(D),
 	.io_WR(io_wr),

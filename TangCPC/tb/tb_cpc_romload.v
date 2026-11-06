@@ -4,15 +4,15 @@
 `timescale 1ns/1ps
 module tb_cpc_romload;
     reg clk = 0; always #15.6 clk = ~clk;
-    reg reset = 1, mounted = 0, clear = 0, boot_idle = 1;
+    reg reset = 1, mounted = 0, clear = 0, boot_idle = 1, amsdos_en = 1, rom0_ext = 0, rom7_ext = 0;
     reg [31:0] size = 0; reg [4:0] slot = 0;
     wire sd_rd; wire [31:0] sd_lba; reg sd_busy = 0;
     reg [8:0] baddr = 0; reg [7:0] bdout = 0; reg bwr = 0;
     wire [22:0] ram_addr; wire [7:0] ram_din; wire ram_req; reg ram_ack = 0;
-    wire [255:0] rom_map; wire busy;
+    wire [255:0] rom_map; wire [1:0] ext_sel; wire busy;
 
     cpc_romload dut (.clk(clk), .reset(reset), .img_mounted(mounted), .img_size(size),
-        .slot(slot), .clear(clear), .amsdos_en(1'b1), .boot_idle(boot_idle), .sd_rd(sd_rd), .sd_lba(sd_lba),
+        .slot(slot), .clear(clear), .amsdos_en(amsdos_en), .rom0_ext(rom0_ext), .rom7_ext(rom7_ext), .ext_sel(ext_sel), .boot_idle(boot_idle), .sd_rd(sd_rd), .sd_lba(sd_lba),
         .sd_busy(sd_busy), .sd_buff_addr(baddr), .sd_buff_dout(bdout), .sd_buff_wr(bwr),
         .ram_addr(ram_addr), .ram_din(ram_din), .ram_req(ram_req), .ram_ack(ram_ack),
         .rom_map(rom_map), .busy(busy));
@@ -46,7 +46,7 @@ module tb_cpc_romload;
 
     initial begin
         repeat (5) @(posedge clk); reset = 0;
-        if (rom_map[31:0] !== 32'h0000_0081) begin errs = errs + 1; $display("FAIL: reset map %h", rom_map[31:0]); end
+        if (rom_map[31:0] !== 32'h0000_0081)  // bit 0 internal BASIC, bit 7 AMSDOS On begin errs = errs + 1; $display("FAIL: reset map %h", rom_map[31:0]); end
 
         load(5'd9, 16384, 0);                              // plain 16 KB ROM into slot 9
         if (!rom_map[9]) begin errs = errs + 1; $display("FAIL: slot 9 not set"); end
@@ -63,8 +63,29 @@ module tb_cpc_romload;
         if (rom_map[9]) begin errs = errs + 1; $display("FAIL: slot 9 not cleared"); end
         slot = 5'd12; @(posedge clk); clear = 1; repeat (3) @(posedge clk); clear = 0; @(posedge clk);
         if (rom_map[12]) begin errs = errs + 1; $display("FAIL: clear button"); end
-        slot = 5'd7; @(posedge clk); clear = 1; repeat (3) @(posedge clk); clear = 0; @(posedge clk);
-        if (!rom_map[7]) begin errs = errs + 1; $display("FAIL: AMSDOS slot must be protected"); end
+
+        // external slots 0 / 7: own SDRAM areas, selected by ROM0 / ROM7 (INT / EXT), internal ROM untouched
+        load(5'd0, 16384, 0);
+        for (i = 0; i < 16384; i = i + 1)
+            if (sdram[23'h480000 + i] !== fbyte(i)) begin errs = errs + 1;
+                if (errs < 10) $display("FAIL ext0 byte %0d", i); end
+        if (ext_sel[0]) begin errs = errs + 1; $display("FAIL: ROM0 INT must not select the external ROM"); end
+        rom0_ext = 1; @(posedge clk);
+        if (!ext_sel[0]) begin errs = errs + 1; $display("FAIL: ROM0 EXT with a loaded ROM"); end
+        slot = 5'd0; @(posedge clk); clear = 1; repeat (3) @(posedge clk); clear = 0; @(posedge clk);
+        if (ext_sel[0]) begin errs = errs + 1; $display("FAIL: clear slot 0 must fall back to INT"); end
+
+        amsdos_en = 0; rom7_ext = 1; @(posedge clk);
+        if (rom_map[7]) begin errs = errs + 1; $display("FAIL: no DOS expected (AMSDOS Off, no external ROM 7)"); end
+        load(5'd7, 16384, 0);
+        for (i = 0; i < 16384; i = i + 1)
+            if (sdram[23'h484000 + i] !== fbyte(i)) begin errs = errs + 1;
+                if (errs < 10) $display("FAIL ext7 byte %0d", i); end
+        if (!ext_sel[1] || !rom_map[7]) begin errs = errs + 1; $display("FAIL: external ROM 7 must be visible with AMSDOS Off"); end
+        rom7_ext = 0; @(posedge clk);
+        if (ext_sel[1] || rom_map[7]) begin errs = errs + 1; $display("FAIL: ROM7 INT + AMSDOS Off = no DOS"); end
+        amsdos_en = 1; @(posedge clk);
+        if (!rom_map[7]) begin errs = errs + 1; $display("FAIL: ROM7 INT + AMSDOS On"); end
 
         $display(errs ? "tb_cpc_romload: %0d ERRORS" : "tb_cpc_romload: PASS", errs);
         $finish;

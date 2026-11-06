@@ -94,7 +94,7 @@ assign bl616_mon_tx = uart_rx;
 wire clk160;
 wire clk32;
 wire flash_clk;
-wire flash_clk_shifted;     // 96 MHz + 22.5° → mspi_clk (timing SPI correct)
+wire flash_clk_shifted;     // 96 MHz, phase FLASH_PSDA ("0000" = no shift in this build) → mspi_clk
 wire pll_lock_hdmi;
 wire  [5:0] fdc_dbg_flags;   // debug LEDs (S1)
 wire  [7:0] fdc_dbg_msr;     // debug LEDs (S2)
@@ -143,6 +143,7 @@ wire        core_wr_rd_done;
 wire [7:0]  core_rb_byte;
 wire [15:0] core_dbg_first_flash;
 wire        core_flash_retry, core_flash_err;   // boot loader: flash word needed a re-read / never verified
+wire [15:0] core_flash_cnt;                      // boot loader: number of flash words whose two reads differed (S1+S2 page)
 
 wire pll_lock_flash;
 wire pll_lock = pll_lock_hdmi && pll_lock_flash;
@@ -180,9 +181,21 @@ Gowin_CLKDIV clkdiv_inst (
     .resetn ( pll_lock_hdmi )
 );
 
-flash_pll pll_flash_inst (
+// Flash read experiment (S1+S2 LED page shows the number of flash words whose two reads differed):
+//   FLASH_PSDA        phase of the SPI pin clock (CLKOUTP of flash_pll), delay in steps of 22.5 deg of 96 MHz:
+//                     "1111" = 22.5 deg lead (this core up to 12df7b9), "1110" = 45, "1101" = 67.5,
+//                     "1100" = 90 deg lead (NanoMig on the Tang Nano 20K, flash at 85.5 MHz)
+//   FLASH_READ_DELAY  sampling point of the read data: 0 = states 24..31 (upstream default, NanoMig),
+//                     1 = states 25..32 (one SPI clock later, this core up to 12df7b9)
+// Hardware scan 2026-11-06 (READ_DELAY 1): "1101", "1110" fail (many differing reads), "1111", "0000", "0001" boot OK,
+// "0010", "0011" fail with counter 0 (stable wrong data). Default = centre of the working steps. 12df7b9 = "1111" / 1 (window edge).
+localparam       FLASH_PSDA       = "0000";   // string as PSDA_SEL of the rPLL; measured on hardware 2026-11-06: working "1111", "0000", "0001" (READ_DELAY 1), centre "0000"
+localparam       FLASH_READ_DELAY = 1;
+
+flash_pll #(.PSDA(FLASH_PSDA))
+pll_flash_inst (
     .clkout  ( flash_clk         ),  // 96 MHz — logique flash
-    .clkoutp ( flash_clk_shifted ),  // 96 MHz +22.5° — horloge SPI physique
+    .clkoutp ( flash_clk_shifted ),  // 96 MHz, phase FLASH_PSDA — horloge SPI physique
     .lock    ( pll_lock_flash    ),
     .clkin   ( clk               )
 );
@@ -359,11 +372,11 @@ wire db9_any = (io != 6'b111111);   // any DB9 line low
 //   S1 held        : dbg_db9 = DB9 lines seen low since power-on (after the start-up protection and the 2 ms
 //                    stability filter, i.e. what reaches the CPC): LED0 BTN0, 1 DOWN, 2 UP, 3 RIGHT, 4 LEFT, 5 BTN1
 reg  [5:0] dbg_mnt = 6'd0, dbg_inp = 6'd0, dbg_db9 = 6'd0;
-assign leds_n = (user & reset) ? ~{dbg_inp[5], core_flash_err, core_flash_retry, dbg_inp[2:0]} :   // S1+S2: LED3 flash word re-read, LED4 flash word never verified (replace the key flags)
+assign leds_n = (user & reset) ? ~{core_flash_cnt >= 16'd4096, core_flash_err, core_flash_cnt >= 16'd512, core_flash_cnt >= 16'd64, core_flash_cnt >= 16'd8, core_flash_cnt >= 16'd1} :   // S1+S2: flash read margin of the boot copy = number of words whose two reads differed (thermometer: LED0 >= 1, LED1 >= 8, LED2 >= 64, LED3 >= 512, LED5 >= 4096), LED4 = a word never verified
                 user  ? ~dbg_db9 :
                 reset ? ~dbg_mnt :
                 db9_any ? io :        // DB9 test: LED lit = pin pulled low. 0=BTN0 1=DOWN 2=UP 3=RIGHT 4=LEFT 5=BTN1
-                        ~{cpc_alive, tape_rec_ind, rom_led, tape_led, disc_led, sys_amsdos};   // normal: LED0 AMSDOS On, LED1 disc, LED2 tape, LED3 ROM loading, LED4 tape recording (solid) / recording failed (blinking), LED5 CPC alive (steady while CRTC VSync runs)
+                        ~{cpc_alive, tape_rec_ind, rom_led, tape_led, disc_led, core_rom_map[7]};   // normal: LED0 ROM7 / DOS active (internal AMSDOS On or external ROM 7 in use; off = tape only), LED1 disc, LED2 tape, LED3 ROM loading, LED4 tape recording (solid) / recording failed (blinking), LED5 CPC alive (steady while CRTC VSync runs)
 assign ws2812 = 1'b0;
 
 // ---------------------------------------------------------------------------
@@ -460,7 +473,7 @@ cpc_sdram sdram_inst (
 );
 
 // ---------------------------------------------------------------------------
-// Flash SPI — horloge physique = flash_clk_shifted (22.5° de décalage)
+// Flash SPI — horloge physique = flash_clk_shifted (phase FLASH_PSDA, voir plus haut)
 // Le module flash gère mspi_cs, mspi_di, mspi_hold, mspi_wp, mspi_do
 // ---------------------------------------------------------------------------
 assign mspi_clk = flash_clk_shifted;
@@ -472,7 +485,6 @@ assign mspi_clk = flash_clk_shifted;
 
 // Clavier / joysticks BL616 (pilotés plus bas par mcu_hid / hid_cpc_matrix)
 wire        rom_busy;
-wire        rom_restore;
 wire  [1:0] sys_reset_w;
 // While a ROM file is written to SDRAM the Z80 is only frozen (cpu_hold, via WAIT);
 // CRTC and Gate Array keep running, so the HDMI picture and the OSD stay stable.
@@ -514,6 +526,9 @@ wire  [4:0] sys_rom_slot;
 wire        sys_rom_clear;
 wire        sys_rom_clearset;
 wire        sys_amsdos;
+wire        sys_rom0_ext;
+wire        sys_rom7_ext;
+wire  [1:0] core_rom_ext;
 wire        sys_waitgate;
 wire        sys_hlock;
 wire        sys_mono;
@@ -655,11 +670,11 @@ wire [79:0] cpc_ext_key;
 wire  [6:0] cpc_joy1;
 wire  [6:0] cpc_joy2;
 
-cpc_core core_inst (
+cpc_core #(.FLASH_READ_DELAY(FLASH_READ_DELAY)) core_inst (
     .clk32      ( clk32              ),
     .flash_clk  ( flash_clk         ),
     .por        ( por                ),
-    .cold_boot       ( cold_w | rom_restore  ),
+    .cold_boot       ( cold_w                ),
     .cpu_hold        ( rom_busy              ),
     .boot_busy       ( boot_busy_w           ),
     .sdram_rdy       ( sdram_ready           ),
@@ -706,6 +721,7 @@ cpc_core core_inst (
     .boot_ack   ( core_boot_ack     ),
     // ROM map
     .rom_map    ( core_rom_map      ),
+    .rom_ext    ( core_rom_ext      ),
     // Sorties vidéo (Phase 3d)
     .red        ( core_red          ),
     .green      ( core_green        ),
@@ -746,7 +762,8 @@ cpc_core core_inst (
     .rb_byte       ( core_rb_byte       ),
     .dbg_first_flash_word ( core_dbg_first_flash ),
     .flash_retry  ( core_flash_retry ),
-    .flash_err    ( core_flash_err   )
+    .flash_err    ( core_flash_err   ),
+    .flash_retry_cnt ( core_flash_cnt )
 );
 
 // ---------------------------------------------------------------------------
@@ -930,6 +947,8 @@ sysctrl sysctrl_inst (
     .system_rom_clear    ( sys_rom_clear    ),
     .system_rom_clearset ( sys_rom_clearset ),
     .system_amsdos       ( sys_amsdos       ),
+    .system_rom0_ext     ( sys_rom0_ext     ),
+    .system_rom7_ext     ( sys_rom7_ext     ),
     .system_waitgate     ( sys_waitgate     ),
     .system_hlock        ( sys_hlock        ),
     .system_mono         ( sys_mono         ),
@@ -1014,9 +1033,10 @@ cpc_romload cpc_romload_inst (
     .clear        ( sys_rom_clear            ),
     .clear_set    ( sys_rom_clearset         ),
     .amsdos_en    ( sys_amsdos               ),
+    .rom0_ext     ( sys_rom0_ext             ),
+    .rom7_ext     ( sys_rom7_ext             ),
     .boot_idle    ( core_wr_rd_done          ),
     .prog         ( rom_prog                 ),
-    .restore      ( rom_restore              ),
     .forget       ( factory_w                ),
     .sd_rd        ( rom_rd                   ),
     .sd_set       ( rom_set                  ),
@@ -1030,6 +1050,7 @@ cpc_romload cpc_romload_inst (
     .ram_req      ( rl_req                   ),
     .ram_ack      ( boot_ack_w               ),
     .rom_map      ( core_rom_map             ),
+    .ext_sel      ( core_rom_ext             ),
     .busy         ( rom_busy                 )
 );
 

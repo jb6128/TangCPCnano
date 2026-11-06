@@ -9,7 +9,9 @@
 
 // 27 MHz * 32 / 9 = 96.000 MHz (exact; VCO 768 MHz, PFD 3 MHz). Flash clock and, at the same time,
 // the input of pll_160m (27 MHz cannot make 160 MHz in one PLL: it would need *160/27).
-module flash_pll (clkout, lock, clkoutp, clkin);
+module flash_pll #(
+    parameter PSDA = "1100"   // phase of CLKOUTP (SPI pin clock), see below
+) (clkout, lock, clkoutp, clkin);
 
 output clkout;
 output lock;
@@ -32,7 +34,12 @@ rPLL #(
     .FBDIV_SEL(31),
     .DYN_ODIV_SEL("false"),
     .ODIV_SEL(8),
-    .PSDA_SEL("1111"),
+    // Phase of CLKOUTP (= SPI pin clock mspi_clk), delay in steps of 22.5 deg of the 96 MHz clock:
+    // "1111" = 337.5 deg delay = 22.5 deg lead (this core up to 12df7b9), "1110" = 45 deg lead, "1101" = 67.5 deg lead,
+    // "1100" = 270 deg delay = 90 deg lead (NanoMig on the Tang Nano 20K, which runs the flash at 85.5 MHz).
+    // Set by the parameter PSDA (instance in top.sv, localparam FLASH_PSDA).
+    // Flash read experiment: see FLASH_READ_DELAY in top.sv and the S1+S2 LED page (top.sv).
+    .PSDA_SEL(PSDA),
     .DYN_DA_EN("false"),
     .DUTYDA_SEL("1000"),
     .CLKOUT_FT_DIR(1'b1),
