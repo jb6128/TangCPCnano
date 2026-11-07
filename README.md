@@ -75,7 +75,7 @@ Adjust the Gowin path to match your installation. The build takes about 25 secon
 ### Flash the FPGA
 
 ```bash
-openFPGALoader -b tangnano20k impl/pnr/TangCPC.fs
+openFPGALoader -b tangnano20k -f impl/pnr/TangCPC.fs
 ```
 
 ### Flash the CPC ROMs
@@ -83,7 +83,7 @@ openFPGALoader -b tangnano20k impl/pnr/TangCPC.fs
 The CPC ROMs must be written to flash at offset `0x200000`. A `boot.rom` is included in `TangCPC/`:
 
 ```bash
-openFPGALoader -b tangnano20k --write-flash --offset 0x200000 TangCPC/boot.rom
+openFPGALoader -b tangnano20k --write-flash --offset 0x200000 boot.rom
 ```
 
 ## Architecture
