@@ -54,7 +54,7 @@ module cpc_fdc (
     // debug (LEDs): sticky activity flags and the last main-status value read
     output reg   [5:0] dbg_flags,
     output reg   [7:0] dbg_msr,
-    output wire  [5:0] dbg_scan      // u765 image scan state (debug LEDs)
+    output wire [10:0] dbg_scan      // u765 image ready / scan state (debug LEDs, mount replay gate)
 );
 
     //------------------------------------------------------------------------

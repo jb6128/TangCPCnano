@@ -50,8 +50,9 @@ module cpc_core #(
 
     // Reset demandé par l'OSD (sysctrl "R"): 0 = run, 1 = reset, 3 = cold boot
     input   [1:0]   sys_reset,
-    // OSD "Model": 1 = CPC 664 (664 OS + BASIC, 64 KB RAM). Sampled while the CPC is in reset.
-    input           model664,
+    // OSD "Model": 0 = CPC 6128, 1 = CPC 664 (664 OS + BASIC 1.1, 64 KB RAM), 2 = CPC 464 (464 OS + BASIC 1.0, 64 KB RAM).
+    // Sampled while the CPC is in reset (3 is treated as 6128).
+    input     [1:0] model,
 
     // Cassette : signal lu par le PPI (port B bit 7) et relais moteur (port C bit 4)
     input           tape_in,
@@ -77,7 +78,7 @@ module cpc_core #(
     output  [7:0]   fdc_buff_din,
     output  [5:0]   fdc_dbg_flags,
     output  [7:0]   fdc_dbg_msr,
-    output  [5:0]   fdc_dbg_scan,
+    output [10:0]   fdc_dbg_scan,
 
     // Debug : état maximal atteint par le boot loader FSM
     output reg [4:0] dbg_boot_state,
@@ -168,7 +169,7 @@ module cpc_core #(
 // Constantes de la table des segments ROM
 // ---------------------------------------------------------------------------
 // 3 segments, chacun 0x2000 mots (16 KB)
-localparam        N_SEGS     = 5;   // 6128 OS, BASIC, AMSDOS + 664 OS, BASIC
+localparam        N_SEGS     = 7;   // 6128 OS, BASIC, AMSDOS + 664 OS, BASIC + 464 OS, BASIC
 localparam [12:0] LAST_WORD  = 13'd8191; // index du dernier mot (16KB = 8192 mots, indices 0..8191)
 
 // Flash word addresses de début de chaque segment
@@ -177,6 +178,8 @@ localparam [21:0] FLASH_BASE_1 = 22'h102000; // BASIC ROM CPC 6128
 localparam [21:0] FLASH_BASE_2 = 22'h104000; // AMSDOS ROM
 localparam [21:0] FLASH_BASE_3 = 22'h108000; // OS ROM    CPC 664  (boot.rom offset 0x10000)
 localparam [21:0] FLASH_BASE_4 = 22'h10A000; // BASIC ROM CPC 664  (boot.rom offset 0x14000)
+localparam [21:0] FLASH_BASE_5 = 22'h10C000; // OS ROM    CPC 464  (boot.rom offset 0x18000)
+localparam [21:0] FLASH_BASE_6 = 22'h10E000; // BASIC ROM CPC 464 (BASIC 1.0, boot.rom offset 0x1C000)
 
 // SDRAM byte addresses de début (bank encodé dans [22:21])
 localparam [22:0] SDRAM_BASE_0 = 23'h000000; // lower ROM OS
@@ -185,6 +188,8 @@ localparam [22:0] SDRAM_BASE_2 = 23'h41C000; // upper ROM bank 7 (AMSDOS)
 // 664 set in the free RAM pages 0/1 (0x000000..0x01FFFF; CPC RAM starts at 0x020000, see Amstrad_MMU)
 localparam [22:0] SDRAM_BASE_3 = 23'h004000; // 664 lower ROM (OS)
 localparam [22:0] SDRAM_BASE_4 = 23'h008000; // 664 upper ROM 0 (BASIC)
+localparam [22:0] SDRAM_BASE_5 = 23'h00C000; // 464 lower ROM (OS)
+localparam [22:0] SDRAM_BASE_6 = 23'h010000; // 464 upper ROM 0 (BASIC 1.0)
 
 // ROM map : fournie par cpc_romload (slots 0 et 7 = flash, 1..31 = ROMs OSD)
 
@@ -271,7 +276,7 @@ localparam ST_V_LO      = 5'd23; // verify: wait busy=0
 localparam ST_V_CMP     = 5'd24; // verify: two equal reads in a row -> accept, else read again
 
 reg [4:0]  state;
-reg [2:0]  seg;          // 0..4 : index du segment ROM en cours
+reg [2:0]  seg;          // 0..6 : index du segment ROM en cours
 reg [12:0] word_cnt;     // compteur de mots dans le segment courant
 reg [21:0] cur_flash;    // adresse flash courante (mots)
 reg [22:0] cur_sdram;    // adresse SDRAM courante (bytes)
@@ -284,8 +289,8 @@ assign boot_busy = ~boot_done_r;
 reg first_latch_captured;  // 1 après capture du premier flash_dout
 
 // Model selection takes effect at a reset only (the ROMs must not change under a running CPU)
-reg model_r = 1'b0;
-always @(posedge clk32) if (~boot_done_r | (|sys_reset)) model_r <= model664;
+reg [1:0] model_r = 2'd0;
+always @(posedge clk32) if (~boot_done_r | (|sys_reset)) model_r <= model;
 
 // Likewise the choice internal / external ROM 0 and 7 (the upper ROM must not change under a running CPU)
 reg [1:0] rom_ext_r = 2'b00;
@@ -339,6 +344,8 @@ always @(posedge clk32) begin
                     3'd2: begin cur_flash <= FLASH_BASE_2; cur_sdram <= SDRAM_BASE_2; end
                     3'd3: begin cur_flash <= FLASH_BASE_3; cur_sdram <= SDRAM_BASE_3; end
                     3'd4: begin cur_flash <= FLASH_BASE_4; cur_sdram <= SDRAM_BASE_4; end
+                    3'd5: begin cur_flash <= FLASH_BASE_5; cur_sdram <= SDRAM_BASE_5; end
+                    3'd6: begin cur_flash <= FLASH_BASE_6; cur_sdram <= SDRAM_BASE_6; end
                     default: ;
                 endcase
                 state <= ST_FLASH_CS;
@@ -669,8 +676,8 @@ Amstrad_motherboard mb (
     // ROM map — depuis boot loader
     .rom_map        ( rom_map       ),
     .rom_ext        ( rom_ext_r     ),
-    .ram64k         ( model_r       ),  // 664: 64 KB (RAM bank switching ignored)
-    .model664       ( model_r       ),  // 664: OS/BASIC from the 664 set
+    .ram64k         ( model_r == 2'd1 || model_r == 2'd2 ),  // 664 / 464: 64 KB (RAM bank switching ignored)
+    .model          ( model_r       ),  // 664 / 464: OS/BASIC from the 664 / 464 set
 
     // Bus CPU — données bus tirées haut (tri-state CPC convention)
     .cpu_din        ( cpu_din_bus   ),

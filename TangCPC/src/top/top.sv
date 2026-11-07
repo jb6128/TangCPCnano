@@ -98,7 +98,8 @@ wire flash_clk_shifted;     // 96 MHz, phase FLASH_PSDA ("0000" = no shift in th
 wire pll_lock_hdmi;
 wire  [5:0] fdc_dbg_flags;   // debug LEDs (S1)
 wire  [7:0] fdc_dbg_msr;     // debug LEDs (S2)
-wire  [5:0] fdc_dbg_scan;
+wire [10:0] fdc_dbg_scan;   // {watchdog seen, dirty B, dirty A, ready B, ready A, scan state B (2), scan state A (2), scan lock, mount read busy}
+wire  [2:0] sd_dbg;         // {floppy request went to the MCU (sticky), direct mode image 1, direct mode image 0}
 
 // Sorties mémoire Amstrad_motherboard (Phase 3c : connectées à SDRAM)
 wire [22:0] core_mem_addr;
@@ -363,18 +364,17 @@ reg  tape_rec_ind = 1'b0;           // LED4: SAVE recording in progress / failed
 reg  bl616_seen = 1'b0, pico_seen = 1'b0; // diagnostics: a key from this source was seen since power-on (together on LED4)
 wire db9_any = (io != 6'b111111);   // any DB9 line low
 // Static start-up diagnostics, sticky since the power-on reset (lit = 1), see the block at the end of this file:
-//   S2 held        : dbg_mnt = ROM-set mount path   (LED0 set mount pulse seen, LED1 set mount with size > 0,
-//                    LED2 disk A mounted with size > 0, LED3 ROM-set load started, LED4 second set mount pulse,
-//                    LED5 external SPI source active)
-//   S1 + S2 held   : dbg_inp = input sources        (LED0 DB9 RIGHT low seen while the cold reset was held, LED1 DB9 RIGHT
-//                    low seen after the reset release, LED2 DB9 any, LED3 companion key, LED4 Pico-UART key,
-//                    LED5 companion cursor-right key; all "seen since power-on")
+//   S2 held        : disk diagnostics (2026-11-07, temporary): LED0 direct mode enabled for image 0 (disk A), LED1 for image 1 (disk B),
+//                    LED2 disk A trackinfo not loaded (dirty), LED3 disk B dirty (all live), LED4 the u765 SD watchdog (0.5 s) dropped a
+//                    request since power-on, LED5 a floppy sector request went to the MCU instead of the direct path since power-on
+//   S1 + S2 held   : flash read margin of the boot copy (since 8b73ced; dbg_inp is no longer shown, see the flash experiment comment)
 //   S1 held        : dbg_db9 = DB9 lines seen low since power-on (after the start-up protection and the 2 ms
 //                    stability filter, i.e. what reaches the CPC): LED0 BTN0, 1 DOWN, 2 UP, 3 RIGHT, 4 LEFT, 5 BTN1
 reg  [5:0] dbg_mnt = 6'd0, dbg_inp = 6'd0, dbg_db9 = 6'd0;
 assign leds_n = (user & reset) ? ~{core_flash_cnt >= 16'd4096, core_flash_err, core_flash_cnt >= 16'd512, core_flash_cnt >= 16'd64, core_flash_cnt >= 16'd8, core_flash_cnt >= 16'd1} :   // S1+S2: flash read margin of the boot copy = number of words whose two reads differed (thermometer: LED0 >= 1, LED1 >= 8, LED2 >= 64, LED3 >= 512, LED5 >= 4096), LED4 = a word never verified
                 user  ? ~dbg_db9 :
-                reset ? ~dbg_mnt :
+                reset ? ~{sd_dbg[2], fdc_dbg_scan[10], fdc_dbg_scan[9], fdc_dbg_scan[8], sd_dbg[1:0]} :   // S2: disk diagnostics, see the page A comment
+
                 db9_any ? io :        // DB9 test: LED lit = pin pulled low. 0=BTN0 1=DOWN 2=UP 3=RIGHT 4=LEFT 5=BTN1
                         ~{cpc_alive, tape_rec_ind, rom_led, tape_led, disc_led, core_rom_map[7]};   // normal: LED0 ROM7 / DOS active (internal AMSDOS On or external ROM 7 in use; off = tape only), LED1 disc, LED2 tape, LED3 ROM loading, LED4 tape recording (solid) / recording failed (blinking), LED5 CPC alive (steady while CRTC VSync runs)
 assign ws2812 = 1'b0;
@@ -492,14 +492,14 @@ wire  [1:0] sys_reset_w;
 // the firmware rescans the upper ROMs and the video sync (vreset) is re-aligned.
 // A ROM load only freezes the Z80 (cpu_hold = rom_busy); there is no reset any more. A new ROM is
 // found by the firmware at the next reset, which the user triggers from the OSD when wanted.
-// OSD "Model" (6128/664): a change of the setting triggers a reset of ~32 ms so that the other ROM
+// OSD "Model" (6128/664/464): a change of the setting triggers a reset of ~32 ms so that the other ROM
 // set is used immediately (the core samples the model while it is in reset).
-wire        sys_model664;
-reg         model_d = 1'b0;
+wire  [1:0] sys_model;
+reg   [1:0] model_d = 2'd0;
 reg  [20:0] model_rst_cnt = 21'd0;
 always @(posedge clk32) begin
-    model_d <= sys_model664;
-    if (model_d != sys_model664)    model_rst_cnt <= 21'h1FFFFF;
+    model_d <= sys_model;
+    if (model_d != sys_model)       model_rst_cnt <= 21'h1FFFFF;
     else if (model_rst_cnt != 21'd0) model_rst_cnt <= model_rst_cnt - 21'd1;
 end
 wire        model_rst = (model_rst_cnt != 21'd0);
@@ -525,7 +525,9 @@ wire        sys_fdc_fast;
 wire  [4:0] sys_rom_slot;
 wire        sys_rom_clear;
 wire        sys_rom_clearset;
-wire        sys_amsdos;
+wire  [1:0] sys_amsdos;
+// OSD "AMSDOS": 0 = Off, 1 = On, 2 = Auto (On for 6128 / 664, Off for 464). A model change resets the CPC anyway.
+wire        amsdos_eff = sys_amsdos[1] ? (sys_model != 2'd2) : sys_amsdos[0];
 wire        sys_rom0_ext;
 wire        sys_rom7_ext;
 wire  [1:0] core_rom_ext;
@@ -572,6 +574,15 @@ reg  [1:0]  rp_idx      = 2'd0;
 reg  [3:0]  rp_cnt      = 4'd0;
 reg  [2:0]  rp_pulse    = 3'd0;
 reg  [31:0] rp_size     = 32'd0;
+// Replay gate (2026-11-06): with disk A and disk B in cpc.ini the replayed mounts followed each other every 9 clk32
+// cycles, so the u765 scanned both images in parallel (hardware: `|b` read fail after boot, fine when only drive1 is
+// set, fine after re-selecting the file). MNT_SERIAL = 1: the next replay pulse waits until the u765 has finished the
+// header scan of the previous disk image (or MNT_TIMEOUT clk32 cycles, about 0.5 s); 0 = old behaviour.
+localparam       MNT_SERIAL  = 1;
+localparam [23:0] MNT_TIMEOUT = 24'hFFFFFF;
+reg  [23:0] rp_to       = 24'd0;
+wire  [1:0] fdc_scan_st = rp_idx[0] ? fdc_dbg_scan[5:4] : fdc_dbg_scan[3:2];   // scan state of the disk just mounted
+wire        fdc_scan_idle = (fdc_scan_st == 2'd0) && !fdc_dbg_scan[1] && !fdc_dbg_scan[0];
 wire  [1:0] fdc_mnt     = mnt_defer ? 2'b00 : (rp_act ? rp_pulse[1:0] : sd_img_mounted[1:0]);
 wire        tape_mnt    = mnt_defer ? 1'b0  : (rp_act ? rp_pulse[2]   : sd_img_mounted[2]);
 wire [31:0] mnt_size    = rp_act ? rp_size : sd_img_size;
@@ -584,6 +595,7 @@ always @(posedge clk32) begin
         rp_act   <= 1'b0;
         rp_idx   <= 2'd0;
         rp_cnt   <= 4'd0;
+        rp_to    <= 24'd0;
     end else begin
         // store the mounts that arrive while the cold reset is held (the last one of an image wins)
         if (mnt_defer) begin
@@ -596,6 +608,7 @@ always @(posedge clk32) begin
             rp_act <= 1'b1;
             rp_idx <= 2'd0;
             rp_cnt <= 4'd0;
+            rp_to  <= 24'd0;
         end else if (rp_act) begin
             if (rp_cnt == 4'd0) begin
                 if (rp_idx == 2'd3) rp_act <= 1'b0;
@@ -607,8 +620,12 @@ always @(posedge clk32) begin
                 end else
                     rp_idx <= rp_idx + 2'd1;
             end else if (rp_cnt == 4'd8) begin
-                rp_idx <= rp_idx + 2'd1;
-                rp_cnt <= 4'd0;
+                if (!MNT_SERIAL || rp_idx == 2'd2 || fdc_scan_idle || rp_to == MNT_TIMEOUT) begin
+                    rp_idx <= rp_idx + 2'd1;
+                    rp_cnt <= 4'd0;
+                    rp_to  <= 24'd0;
+                end else
+                    rp_to <= rp_to + 24'd1;
             end else
                 rp_cnt <= rp_cnt + 4'd1;
         end
@@ -685,7 +702,7 @@ cpc_core #(.FLASH_READ_DELAY(FLASH_READ_DELAY)) core_inst (
     .joy2_in         ( cpc_joy2              ),
     // Disquettes (Étape 1)
     .sys_reset       ( cpc_reset_w           ),
-    .model664        ( sys_model664          ),
+    .model           ( sys_model             ),
     .tape_in         ( tape_in_w             ),
     .tape_motor      ( tape_motor_w          ),
     .tape_out        ( tape_out_w            ),
@@ -961,7 +978,7 @@ sysctrl sysctrl_inst (
     .system_firesw       ( sys_firesw       ),
     .system_numpad       ( sys_numpad       ),
     .system_wide         ( sys_wide         ),
-    .system_model664     ( sys_model664     ),
+    .system_model       ( sys_model        ),
     .system_hpos         ( sys_hpos         ),
     .system_tape_inv     ( sys_tape_inv     ),
     .system_tape_prot    ( sys_tape_prot    ),
@@ -1032,7 +1049,7 @@ cpc_romload cpc_romload_inst (
     .slot         ( sys_rom_slot             ),
     .clear        ( sys_rom_clear            ),
     .clear_set    ( sys_rom_clearset         ),
-    .amsdos_en    ( sys_amsdos               ),
+    .amsdos_en    ( amsdos_eff               ),
     .rom0_ext     ( sys_rom0_ext             ),
     .rom7_ext     ( sys_rom7_ext             ),
     .boot_idle    ( core_wr_rd_done          ),
@@ -1068,6 +1085,7 @@ sd_card #(.CLK_DIV(3'd2), .SIMULATE(0), .IMAGE_FIFO_BITS(1)) sd_card_inst (
     .iack                       ( sys_int_ack[3]   ),
     .image_size                 ( sd_img_size      ),
     .image_mounted              ( sd_img_mounted   ),
+    .dbg_sd                     ( sd_dbg           ),
     .rom_image_selection_strobe (                  ),
     .rom_image_selected         (                  ),
     .rom_image_accepted         ( 1'b0             ),
@@ -1422,34 +1440,24 @@ video2hdmi video2hdmi_inst (
 // ---------------------------------------------------------------------------
 // Static start-up diagnostics (2026-10-31): sticky flags since power-on, shown on the LEDs while S2 (and
 // S1 + S2) or S1 is held. They replace the former S2 scan display, the S1 + S2 PC snapshot and the S1 FDC flags.
-// Page A (S2): did a ROM-set mount reach the core, and did the load start?
-//   [0] set mount pulse seen          [1] set mount with size > 0 seen   [2] disk A mounted with size > 0
-//   [3] ROM-set load started          [4] second set mount pulse seen    [5] external SPI source active
-//   (eject pulse only = [0] without [1]: the companion could not open the file)
+// Page A (S2, changed 2026-11-07): disk diagnostics, see the comment at the LED mux (the former mount flags dbg_mnt are no longer shown)
 // Page B (S1 + S2): which source reported a joystick direction / key since power-on?
 //   [0] DB9 RIGHT low while the cold reset was held  [1] DB9 RIGHT low after the release  [2] DB9 any
 //   [3] companion key  [4] Pico-UART key  [5] companion cursor-right key (HID 0x4F).
 //   (Hardware 2026-10-31: companion and Pico-UART joystick flags were never set, so LED0/1 now show timing.)
 //   Do not touch keys / joystick before reading the page.
 // ---------------------------------------------------------------------------
-reg [1:0] dbg_setn = 2'd0;
 always @(posedge clk32) begin
     if (por) begin
         dbg_mnt  <= 6'd0;
         dbg_inp  <= 6'd0;
         dbg_db9  <= 6'd0;
-        dbg_setn <= 2'd0;
     end else begin
         dbg_db9 <= dbg_db9 | ~db9_ok;                  // per line: seen low (active low) since power-on
-        if (sd_img_mounted[4]) begin
-            dbg_mnt[0] <= 1'b1;
-            if (sd_img_size != 32'd0) dbg_mnt[1] <= 1'b1;
-            if (dbg_setn != 2'd2)     dbg_setn <= dbg_setn + 2'd1;
-            if (dbg_setn == 2'd1)     dbg_mnt[4] <= 1'b1;
-        end
+        if (sd_img_mounted[4] && sd_img_size != 32'd0) dbg_mnt[0] <= 1'b1;
+        if (rom_set && rom_prog != 5'd0)               dbg_mnt[1] <= 1'b1;
         if (sd_img_mounted[0] && sd_img_size != 32'd0) dbg_mnt[2] <= 1'b1;
-        if (rom_set && rom_prog != 5'd0)               dbg_mnt[3] <= 1'b1;
-        if (spi_ext)                                   dbg_mnt[5] <= 1'b1;
+        if (sd_img_mounted[1] && sd_img_size != 32'd0) dbg_mnt[3] <= 1'b1;
 
         if (!db9_ok[3] &&  cold_w)  dbg_inp[0] <= 1'b1;   // RIGHT low during the companion's mount phase
         if (!db9_ok[3] && !cold_w)  dbg_inp[1] <= 1'b1;   // RIGHT low after the reset release

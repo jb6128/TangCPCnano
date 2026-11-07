@@ -43,6 +43,10 @@ module sd_card # (
     // up to eight drive images supported
     output reg [7:0]  image_mounted,
 
+    // diagnostics (LEDs): [0] direct mode enabled for image 0, [1] for image 1,
+    // [2] sticky: a sector request of image 0 / 1 (floppy) went to the MCU instead of the direct path
+    output [2:0]      dbg_sd,
+
     // up to eight rom images supported
 	output reg		  rom_image_selection_strobe,
     output reg [2:0]  rom_image_selected,
@@ -156,6 +160,8 @@ wire	   direct_enable = direct_start[drive] != 32'd0;
    
 wire [7:0] doutb;
 reg  dinb_we;
+reg  dbg_mcu_fdc = 1'b0;
+assign dbg_sd = { dbg_mcu_fdc, direct_start[1] != 32'd0, direct_start[0] != 32'd0 };
 
 `ifndef GOWIN_DPB_IP   // default: portable inferred RAM (Yosys/Gowin); define GOWIN_DPB_IP to use the vendor IP
 sector_dpram #(8, 9) buffer
@@ -206,8 +212,10 @@ always @(posedge clk) begin
    if(!rstn) begin
       irq <= 1'b0;
       startD <= 1'b0;
+      dbg_mcu_fdc <= 1'b0;
    end else begin
       startD <= start_any;
+      if(start_any && !startD && !direct_enable && drive < 3'd2) dbg_mcu_fdc <= 1'b1;
 
 	  // Raising edge of start_any means that the core
 	  // is requesting a sector read or write. If the requesting

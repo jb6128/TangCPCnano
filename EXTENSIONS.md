@@ -13,7 +13,7 @@ Added from other projects in this fork:
 
 - Tang Nano 20K with the **FPGA Companion** on the SPI link: it provides the USB keyboard/joystick, the SD card access and the on-screen menu (OSD) file selectors.
 - Settings and mounted images are stored in `cpc.ini` on the SD card (OSD: Settings → Save settings).
-- ROMs for the OS, BASIC and AMSDOS come from the flash (`TangCPC/boot.rom`, offset `0x200000`).
+- ROMs for OS and BASIC for 6128/664/464, plus AMSDOS come from the flash (`TangCPC/boot.rom`, offset `0x200000`).
 
 ## Features
 
@@ -21,20 +21,29 @@ Added from other projects in this fork:
 |---|---|---|
 | Keyboard | USB keyboard through the FPGA Companion. Optional `Num Joystick` (OSD, default Off): the numeric keypad acts as CPC joystick 1 (see the table below). | works |
 | DB9 joystick | CPC joystick 1 on the DB9 pins, optional fire-button swap. | works |
-| Floppy | `.dsk` images for drive A/B through the OSD, read and write, AMSDOS On/Off, disk write protection, FDC speed. | works |
+| Floppy | `.dsk` images for drive A/B through the OSD, read and write, AMSDOS Auto/On/Off, disk write protection, FDC speed. | works |
 | Tape | `.cdt`/`.tzx` playback from SD, optional tape sound, polarity option. To rewind, reopen the file. | works |
 | Tape recording | `SAVE` is recorded into the mounted CDT (OSD `Tape prot.` = Off). The image must be a pre-made blank tape of at least 1 MB (`tools/make_blank_tape.py tape.cdt 1024`). | works |
 | Upper ROM slots | Up to 16 slots in the OSD: single ROM files (16k), 16-slot ROM sets (256k), clear slot. A progress bar is shown while ROMs load. Slots 0 (BASIC) and 7 (DOS) have an internal (flash) and, optionally, an external ROM. | works |
-| Models | CPC 6128 (default) and 664. | experimental |
+| Models | CPC 6128 (default), 664 and 464. | works |
 | HDMI video | 720×576p50 through a scandoubler, H pos / V pos, H lock, V lock (with selectable correction rate), 800 or 720 px width, green monitor mode, volume. OSD is fixed to the HDMI raster. | works (V lock: demos with changing video modes can still show dropouts) |
 | System clock | Exact 32.000 MHz system clock (PLL cascade 27 → 96 → 160 MHz), so the CPC runs at its real speed and pixel clock. | works |
 | 15 kHz RGB + CSYNC | Original CPC timing on header pins (2 bits per colour, Hi-Z unless `RGB out` is On) for RGB-to-HDMI converters or a CRT; fixed pixel phase offset. | works |
 | Start-up | ROM set / disk / tape mounts from `cpc.ini` are deferred until the cold reset is released, so the Companion and the core do not use the SD card at the same time. | works |
 | Debug LEDs | The six on-board LEDs show activity (AMSDOS, disk, tape, ROM load, tape recording, alive); holding S1/S2 shows static diagnostic pages. | works |
 
+Note: CPC464 added in v0.6, needs new `boot.rom` to be flashed!
+
 ## OSD menu
 
 Press **F12** to open the on-screen menu. Settings are stored with Settings → Save settings (`cpc.ini`). **Cold boot** behaves like a power-on (`cpc.ini` is loaded again), **Factory boot** starts with all settings at their defaults and without external ROMs (`cpc.ini` is neither read nor changed).
+
+## Floppy
+
+`AMSDOS: Auto` means `On` for 6128/664, and `Off` for 464.
+For a 464 with floppy set AMSDOS to On, or use external DOS ROM with ROM7 EXT.
+
+Known issue: If both Drive A and B are saved in `cpc.ini`, on start-up only one drive will be ready, the other must be selected again in the OSD.
 
 ## Upper ROMs
 
@@ -96,7 +105,7 @@ monitor, and also fine for 75 Ω RGB-to-HDMI converters (about 0.8 V).
 
 ## Known limitations
 
-- The OSD menu cannot show, which ROM slots are loaded.
+- The OSD menu cannot show which ROM slots are loaded.
 - Some demos that change the CRTC timing (e.g. Batman Forever) show brief picture dropouts or a rolling picture on HDMI; a frame buffer would be needed to retime them.
 - A phantom "cursor right" can appear when the monitor is switched to the HDMI input (floating DB9 RIGHT line); it is not fully explained.
 - The Pico UART keyboard path is still in the RTL but is not used by the current setup.

@@ -68,7 +68,7 @@ module sysctrl (
   output reg [4:0]  system_rom_slot,
   output reg        system_rom_clear,
   output reg        system_rom_clearset,
-  output reg        system_amsdos,
+  output reg  [1:0] system_amsdos,    // OSD id A: 0 = Off, 1 = On, 2 = Auto (On for 6128 / 664, Off for 464; default)
   output reg        system_rom0_ext, // OSD id O: 0 = internal BASIC ROM (slot 0), 1 = external ROM 0 when one is loaded (at the next reset)
   output reg        system_rom7_ext, // OSD id o: 0 = internal DOS ROM (slot 7), 1 = external ROM 7 when one is loaded
   output reg        system_waitgate,
@@ -82,7 +82,7 @@ module sysctrl (
   output reg  [2:0] system_volume,   // OSD id V: HDMI audio volume 0..4 = 0 / 25 / 50 / 75 / 100 % (default 4)
   output reg        system_tapesnd,  // OSD id N: 1 = tape signal audible on the HDMI audio
   output reg        system_mono,     // OSD id M: 0 = colour, 1 = green monitor
-  output reg        system_model664, // OSD id Y: 0 = CPC 6128 (OS, BASIC 1.1, 128K), 1 = CPC 664 (OS, BASIC, 64K); effective at the next reset
+  output reg  [1:0] system_model,    // OSD id Y: 0 = CPC 6128 (OS, BASIC 1.1, 128K), 1 = CPC 664 (OS, BASIC 1.1, 64K), 2 = CPC 464 (OS, BASIC 1.0, 64K); effective at the next reset
   output reg        system_wide,     // OSD id D: 0 = 4:3, 1 = full screen (16:9 flag)
   output reg  [3:0] system_hpos,
   output reg        system_tape_inv,
@@ -154,7 +154,7 @@ always @(posedge clk) begin
       system_rom_slot <= 5'd0;
       system_rom_clear <= 1'b0;
       system_rom_clearset <= 1'b0;
-      system_amsdos <= 1'b0;
+      system_amsdos <= 2'd2;
       system_rom0_ext <= 1'b0;
       system_rom7_ext <= 1'b0;
       system_waitgate <= 1'b1;
@@ -169,7 +169,7 @@ always @(posedge clk) begin
       system_firesw <= 1'b0;
       system_numpad <= 1'b0;
       system_wide <= 1'b0;
-      system_model664 <= 1'b0;
+      system_model <= 2'd0;
       system_hpos <= 4'd8;
       system_tape_inv <= 1'b0;
       system_tape_prot <= 1'b1;
@@ -252,7 +252,7 @@ always @(posedge clk) begin
                   if(id == "L") system_rom_slot <= data_in[4:0];
                   if(id == "K") system_rom_clear <= data_in[0];
                   if(id == "Q") system_rom_clearset <= data_in[0];
-                  if(id == "A") system_amsdos <= data_in[0];
+                  if(id == "A") system_amsdos <= data_in[1:0];
                   if(id == "O") system_rom0_ext <= data_in[0];
                   if(id == "o") system_rom7_ext <= data_in[0];
                   if(id == "W") system_waitgate <= data_in[0];
@@ -264,7 +264,7 @@ always @(posedge clk) begin
                   if(id == "J") system_firesw <= data_in[0];
                   if(id == "I") system_numpad <= data_in[0];
                   if(id == "D") system_wide <= data_in[0];
-                  if(id == "Y") system_model664 <= data_in[0];
+                  if(id == "Y") system_model <= data_in[1:0];
                   if(id == "H") system_hpos <= data_in[3:0];
                   if(id == "Z") system_vpos <= data_in[3:0];
                   if(id == "C") system_vlock <= data_in[0];

@@ -71,7 +71,7 @@ module Amstrad_motherboard
 	input [255:0] rom_map,
 	input [1:0]   rom_ext,      // {7, 0}: external upper ROM 7 / 0 in use
 	input         ram64k,
-	input         model664,     // 1 = 664 ROM set (lower ROM and upper ROM 0 at other SDRAM addresses)
+	input  [1:0]  model,        // 0 = 6128, 1 = 664 set (0x004000 / 0x008000), 2 = 464 set (0x00C000 / 0x010000); 3 = 6128
 	output [22:0] mem_addr,
 	output        mem_rd,
 	output        mem_wr,
@@ -286,7 +286,7 @@ Amstrad_MMU MMU
 	.CLK(clk),
 	.reset(reset),
 	.ram64k(ram64k),
-	.model664(model664),
+	.model(model),
 	.romen_n(romen_n),
 	.rom_map(rom_map),
 	.rom_ext(rom_ext),
