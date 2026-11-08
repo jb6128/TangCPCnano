@@ -9,6 +9,7 @@ module video2hdmi (
           input  [9:0] v_start,  // row counter value loaded by vreset (vertical picture position)
           input        cy_arm,   // load the row counter with cy_val at the next row boundary (no reset)
           input  [9:0] cy_val,
+          input  [9:0] frame_len, // HDMI frame height in rows (624, or the CPC frame length with V lock 'Follow')
           output [9:0] cx_o,     // HDMI column / row counter (for the V pos / V lock controller)
           output [9:0] cy_o,
           input        load_en,  // show the ROM load progress bar
@@ -70,6 +71,7 @@ hdmi #(
   .v_start(v_start),
   .cy_arm(cy_arm),
   .cy_val(cy_val),
+  .frame_len(frame_len),
   .cx_o(cx_o),
   .cy_o(cy_o),
   .load_en(load_en),

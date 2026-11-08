@@ -40,6 +40,7 @@ module hdmi
     input logic			      reset,
     input logic			      cy_arm,   // pulse: at the next row boundary the row counter is loaded with cy_val
     input logic [9:0]		      cy_val,
+    input logic [9:0]		      frame_len, // HDMI frame height in rows (624 normally; V lock 'Follow' = CPC frame length)
     output logic [9:0]		      cx_o,     // column / row counter, read by the V pos / V lock controller
     output logic [9:0]		      cy_o,
     input logic [9:0]		      v_start,  // row counter value loaded by reset (default 568)
@@ -119,7 +120,7 @@ wire [10:0] screen_width      = timing[80:70] + wide_extra_width;
 wire [10:0] hsync_pulse_start = timing[69:59];
 wire [10:0] hsync_pulse_size  = timing[58:48];
 
-wire [9:0] frame_height       = timing[47:38];
+wire [9:0] frame_height       = (stmode == 2'd1) ? frame_len : timing[47:38];   // PAL timing: variable frame height (the front porch, VSync and screen height stay, the back porch is what changes)
 wire [9:0] screen_height      = timing[37:28];
 wire [9:0] vsync_pulse_start  = timing[27:18];
 wire [9:0] vsync_pulse_size   = timing[17: 8];

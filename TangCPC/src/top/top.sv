@@ -519,7 +519,9 @@ wire        sys_mono;
 wire        sys_tapesnd;
 wire  [2:0] sys_volume;
 wire  [3:0] sys_vpos;
-wire        sys_vlock;
+wire  [1:0] sys_vlock;                      // OSD "V lock": 0 Off, 1 On, 2 Follow
+wire        sys_lock   = |sys_vlock;        // On or Follow: the row counter is locked to the CPC VSync
+wire        sys_follow = sys_vlock[1];      // Follow: the HDMI frame length also follows a stable CPC frame length
 wire  [2:0] sys_vrate;                      // OSD "V rate": 1 << value rows per frame
 wire        vreset_any;                 // = vreset_pulse (full HDMI re-alignment; 'V pos' only loads the row counter, see below)
 wire        sys_rgbout;
@@ -1270,6 +1272,12 @@ end
 // (the old label-0 position 560 plus half a character: the picture sat ~4 CPC lines too high compared with a real CPC).
 wire [10:0] v_raw   = 11'd504 + {4'd0, sys_vpos, 3'd0};                  // 568 + 8*(v-8)
 wire  [9:0] v_start = (v_raw >= 11'd624) ? (v_raw - 11'd624) : v_raw[9:0];
+// HDMI frame height in rows: 624, or with V lock 'Follow' the CPC frame length (see below). The V controller works
+// modulo vtot; v_tgt = the V pos row position reduced to the current frame (= v_start for vtot 624).
+reg   [9:0] vtot = 10'd624;
+wire [10:0] vt11  = {1'b0, vtot};
+wire [10:0] vt22  = {vtot, 1'b0};
+wire  [9:0] v_tgt = (v_raw >= vt11) ? (v_raw - vt11) : v_raw[9:0];   // v_raw = 504..624 (V pos step 8 rows)
 // V pos / V lock controller. The picture is moved WITHOUT a full HDMI reset (which also restarts the
 // horizontal counter and the TMDS serializers, so the monitor had to re-sync): after the CPC VSync (and the
 // next line boundary) the phase of the HDMI row counter is measured, and the row counter is loaded once
@@ -1281,8 +1289,19 @@ wire  [9:0] v_start = (v_raw >= 11'd624) ? (v_raw - 11'd624) : v_raw[9:0];
 //                index at the row boundary nearest to the VSync/hs event) is moved towards v_start by at most
 //                16 rows per frame, so frame length changes, R7 changes and the irregular frames when a demo
 //                reprograms the CRTC are followed (a large error scrolls back within a few frames).
-// Distance is taken the short way round the 624-row frame. A full vreset (start-up/reset) sets v_cur.
+// Distance is taken the short way round the frame (vtot rows). A full vreset (start-up/reset) sets v_cur.
+//   V lock Follow : as On, plus the HDMI frame length: when the CPC frame length has been identical for 16 frames
+//                -- an exact multiple of 1024 clk32 (= 2 HDMI rows = one CPC line is 2048 clk32), 600..650 rows -- the
+//                HDMI frame is set to exactly that many rows (Jet Set Willy: 310 CPC lines = 620 rows, 50.40 Hz), so the
+//                picture no longer rolls against the HDMI frame. If the length no longer matches for 8 frames the
+//                frame goes back to 624 rows; a different stable length is taken over directly.
+//                Every change of the frame length makes the sink re-sync (picture + sound drop out, always the same
+//                time), so Follow keeps the number of changes small: irregular frames are never chased, and the
+//                alignment to V pos is ONE jump (no 'V rate' walk): right at a change of vtot (vp_one, in the same
+//                frame as the length change) and later after 3 regular frames, when the error is >= 4 rows.
 reg   [9:0] v_cur = 10'd568;
+reg   [9:0] vtot_d = 10'd624;                // vtot of the previous cycle
+reg         vp_one = 1'b0;                   // vtot just changed: the next pass aligns at once (no regular-frame gate, deadband 1 row)
 reg   [3:0] vp_st = 4'd0;
 reg         vp_wait_hs = 1'b0, vp_arm = 1'b0;
 reg   [9:0] cap_cx = 10'd0, cap_cy = 10'd0, vp_val = 10'd0, vp_add = 10'd0;
@@ -1293,16 +1312,18 @@ reg   [2:0] vp_cnt = 3'd0;                   // consecutive frames with no irreg
 wire [10:0] vp_rate = 11'd1 << sys_vrate;     // largest correction per frame (rows)
 always @(posedge clk32) begin
     vp_arm <= 1'b0;
+    vtot_d <= vtot;
+    if (vtot != vtot_d) vp_one <= 1'b1;
     if (por) begin
         v_cur <= 10'd568; vp_wait_hs <= 1'b0; vp_st <= 4'd0; vp_cnt <= 3'd0;
     end else if (vreset_pulse) begin
-        v_cur <= v_start; vp_wait_hs <= 1'b0; vp_st <= 4'd0; vp_cnt <= 3'd0;
+        v_cur <= v_tgt; vp_wait_hs <= 1'b0; vp_st <= 4'd0; vp_cnt <= 3'd0;
     end else if (cpc_in_reset) begin
         vp_wait_hs <= 1'b0; vp_st <= 4'd0;
     end else begin
         case (vp_st)
         4'd0: begin                              // wait for a CPC VSync, then for the next line boundary
-            if ((sys_vlock || v_cur != v_start) && sd_vs_d && !sd_vs) vp_wait_hs <= 1'b1;
+            if ((sys_lock || v_cur != v_tgt) && sd_vs_d && !sd_vs) vp_wait_hs <= 1'b1;
             if (vp_wait_hs && sd_hs_d && !sd_hs) begin
                 cap_cx <= hcx; cap_cy <= hcy; vp_wait_hs <= 1'b0; vp_st <= 4'd1;
             end
@@ -1312,25 +1333,25 @@ always @(posedge clk32) begin
             vp_st <= 4'd2;
         end
         4'd2: begin
-            vp_a   <= (vp_tmp >= 11'd624) ? (vp_tmp - 11'd624) : vp_tmp;
+            vp_a   <= (vp_tmp >= vt11) ? (vp_tmp - vt11) : vp_tmp;
             vp_st <= 4'd3;
         end
         4'd3: begin                              // reference: measured phase (lock) or the assumed one
-            vp_ref <= sys_vlock ? vp_a : {1'b0, v_cur};
+            vp_ref <= sys_lock ? vp_a : {1'b0, v_cur};
             // V lock On: error of the measured phase against the phase expected from the previous frame
             // (v_cur already contains our own correction): 0 or +-1 row = regular frame
-            vp_e   <= (vp_a >= {1'b0, v_cur}) ? (vp_a - {1'b0, v_cur}) : (vp_a + 11'd624 - {1'b0, v_cur});
+            vp_e   <= (vp_a >= {1'b0, v_cur}) ? (vp_a - {1'b0, v_cur}) : (vp_a + vt11 - {1'b0, v_cur});
             vp_st <= 4'd4;
         end
         4'd4: begin                              // distance forwards from ref to v_start (0..623)
-            vp_cnt <= (vp_e <= 11'd1 || vp_e >= 11'd623) ? ((vp_cnt == 3'd7) ? 3'd7 : vp_cnt + 3'd1) : 3'd0;
-            vp_dfw <= ({1'b0, v_start} >= vp_ref) ? ({1'b0, v_start} - vp_ref)
-                                                  : ({1'b0, v_start} + 11'd624 - vp_ref);
+            vp_cnt <= (vp_e <= 11'd1 || vp_e + 11'd1 >= vt11) ? ((vp_cnt == 3'd7) ? 3'd7 : vp_cnt + 3'd1) : 3'd0;
+            vp_dfw <= ({1'b0, v_tgt} >= vp_ref) ? ({1'b0, v_tgt} - vp_ref)
+                                                : ({1'b0, v_tgt} + vt11 - vp_ref);
             vp_st <= 4'd5;
         end
         4'd5: begin                              // shortest way round, at most 16 rows
-            vp_fwd <= (vp_dfw <= 11'd312);
-            vp_tmp <= (vp_dfw <= 11'd312) ? vp_dfw : (11'd624 - vp_dfw);
+            vp_fwd <= (vp_dfw <= {1'b0, vtot[9:1]});
+            vp_tmp <= (vp_dfw <= {1'b0, vtot[9:1]}) ? vp_dfw : (vt11 - vp_dfw);
             vp_st <= 4'd6;
         end
         4'd6: begin
@@ -1338,12 +1359,15 @@ always @(posedge clk32) begin
             // demo reprograms the CRTC: every correction makes a frame 624+-n rows long and the monitor
             // lost the signal), and only 4 rows per frame; V lock Off (V pos walk): 16 rows per frame
             // (rate = OSD 'V rate', 1 << 0..4 rows per frame, default 4; before it was 4 for V lock and 16 for the V pos walk)
-            if (sys_vlock) vp_mag <= (vp_cnt < 3'd3) ? 11'd0 : ((vp_tmp > vp_rate) ? vp_rate : vp_tmp);
+            // V lock Follow: one jump (see above); deadband 1 row right after a vtot change, else 4 rows (a V pos step is 8, rounding +-1)
+            if (sys_follow)
+                           vp_mag <= (vp_one ? vp_tmp <= 11'd1 : (vp_cnt < 3'd3 || vp_tmp < 11'd4)) ? 11'd0 : vp_tmp;
+            else if (sys_lock) vp_mag <= (vp_cnt < 3'd3) ? 11'd0 : ((vp_tmp > vp_rate) ? vp_rate : vp_tmp);
             else           vp_mag <= (vp_tmp > vp_rate) ? vp_rate : vp_tmp;
             vp_st <= 4'd7;
         end
         4'd7: begin                              // correction as a forwards value 0..623, new v_cur = ref + correction
-            vp_add <= vp_fwd ? vp_mag[9:0] : (10'd624 - vp_mag[9:0]);
+            vp_add <= vp_fwd ? vp_mag[9:0] : (vtot - vp_mag[9:0]);
             vp_st <= 4'd8;
         end
         4'd8: begin
@@ -1351,7 +1375,8 @@ always @(posedge clk32) begin
             vp_st <= 4'd9;
         end
         4'd9: begin
-            v_cur <= (vp_tmp >= 11'd624) ? (vp_tmp[9:0] - 10'd624) : vp_tmp[9:0];
+            v_cur <= (vp_tmp >= vt11) ? (vp_tmp - vt11) : vp_tmp[9:0];
+            vp_one <= 1'b0;
             vp_st <= (vp_mag == 11'd0) ? 4'd0 : 4'd10;     // nothing to correct: done
         end
         4'd10: if (hcx >= 10'd64 && hcx < 10'd960) begin    // safely inside a row: no boundary in the next cycles
@@ -1359,8 +1384,8 @@ always @(posedge clk32) begin
             vp_st <= 4'd11;
         end
         4'd11: begin
-            vp_val <= (vp_tmp >= 11'd1248) ? (vp_tmp[9:0] - 10'd624 - 10'd624) :
-                      (vp_tmp >= 11'd624)  ? (vp_tmp[9:0] - 10'd624) : vp_tmp[9:0];
+            vp_val <= (vp_tmp >= vt22) ? (vp_tmp - vt22) :
+                      (vp_tmp >= vt11) ? (vp_tmp - vt11) : vp_tmp[9:0];
             vp_st <= 4'd12;
         end
         4'd12: begin vp_arm <= 1'b1; vp_st <= 4'd0; end
@@ -1370,6 +1395,52 @@ always @(posedge clk32) begin
 end
 assign vreset_any = vreset_pulse;
 
+// V lock Follow: frame length measurement and the choice of the HDMI frame height (vtot).
+// The CPC frame length is measured in clk32 cycles between two CPC VSync events (sd_vs falling edge, the event the V
+// controller uses). A CPC line is 2048 clk32 (R0 = 63) = 2 HDMI rows of 1024, so a frame with constant R0 is an exact
+// multiple of 1024 clk32 = whole HDMI rows; anything else (odd lengths, R0 changes) is 'not stable'.
+//   fl_same  consecutive frames with the same valid length (candidate fl_cand, rows), saturates at 31
+//   fl_bad   consecutive frames whose length differs from the current HDMI frame (vtot), saturates at 15
+// Follow takes over a candidate after 16 identical frames; it goes back to 624 after 8 non-matching frames; with
+// V lock Off / On vtot is 624 (the next frame after the switch, the sink sees one frame length change).
+reg [19:0] fl_cnt  = 20'd0;
+reg [19:0] fl_len  = 20'd0;
+reg        fl_new  = 1'b0, fl_new2 = 1'b0;
+reg  [9:0] fl_cand = 10'd624;
+reg  [4:0] fl_same = 5'd0;
+reg  [3:0] fl_bad  = 4'd0;
+wire [9:0] fl_rows = fl_len[19:10];
+wire       fl_ok   = (fl_len[9:0] == 10'd0) && (fl_rows >= 10'd600) && (fl_rows <= 10'd650);
+always @(posedge clk32) begin
+    fl_new  <= 1'b0;
+    fl_new2 <= fl_new;
+    if (por) begin
+        fl_cnt <= 20'd0; fl_same <= 5'd0; fl_bad <= 4'd0; vtot <= 10'd624;
+    end else if (cpc_in_reset) begin
+        fl_cnt <= 20'd0; fl_same <= 5'd0; fl_bad <= 4'd0;
+    end else begin
+        if (!(&fl_cnt)) fl_cnt <= fl_cnt + 20'd1;
+        if (sd_vs_d && !sd_vs) begin
+            fl_len <= fl_cnt + 20'd1;               // 0 on overflow = invalid
+            fl_cnt <= 20'd0;
+            fl_new <= 1'b1;
+        end
+        if (fl_new) begin                           // fl_len is valid
+            if (fl_ok && fl_rows == fl_cand) fl_same <= (&fl_same) ? fl_same : fl_same + 5'd1;
+            else if (fl_ok)                  begin fl_cand <= fl_rows; fl_same <= 5'd1; end
+            else                             fl_same <= 5'd0;
+            if (fl_ok && fl_rows == vtot)    fl_bad <= 4'd0;
+            else if (!(&fl_bad))             fl_bad <= fl_bad + 4'd1;
+        end
+        if (fl_new2) begin                          // decide with the updated counters
+            if (!sys_follow) begin
+                if (vtot != 10'd624) vtot <= 10'd624;
+            end else if (fl_same >= 5'd16 && fl_cand != vtot) vtot <= fl_cand;
+            else if (fl_bad >= 4'd8 && vtot != 10'd624)       vtot <= 10'd624;
+        end
+    end
+end
+
 video2hdmi video2hdmi_inst (
     .clk_pixel_x5 ( clk160       ),  // 160 MHz TMDS
     .clk_pixel    ( clk32        ),  // 32 MHz pixel
@@ -1377,6 +1448,7 @@ video2hdmi video2hdmi_inst (
     .v_start      ( v_start      ),  // row counter value at a full vreset (OSD 'V pos')
     .cy_arm       ( vp_arm       ),  // V pos / V lock: row counter load at the next row boundary
     .cy_val       ( vp_val       ),
+    .frame_len    ( vtot         ),  // HDMI frame height: 624, or the CPC frame length with V lock Follow
     .cx_o         ( hcx          ),
     .cy_o         ( hcy          ),
     .load_en      ( rom_busy     ),  // ROM load progress bar: start-up and also loads while the CPC runs (was rom_rst = start-up only)

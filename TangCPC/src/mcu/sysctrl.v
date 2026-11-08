@@ -15,7 +15,7 @@
       "F"  FDC speed: normal(0), fast(1)
       "L"  external ROM slot being edited (0..31)
   "K"  clear the selected ROM slot (level, rising edge acts)
-  "C"  V lock: 0 = HDMI frame fixed at 624 rows, 1 = HDMI frame length follows the CPC frame
+  "C"  V lock: 0 = Off (HDMI frame 624 rows, free running), 1 = On (row counter locked to the CPC VSync, frame 624 rows +- small corrections), 2 = Follow (On, and the HDMI frame length = CPC frame length while that is stable)
   "E"  V lock / V pos speed: largest change of the HDMI frame length per frame, 1, 2, 4, 8, 16 rows (0..4, default 2)
   "Z"  vertical picture position 0..15 (label -8..+7, 16 HDMI rows per step, default 8 = 0)
   "Q"  remove the ROM set (level, rising edge acts)
@@ -76,7 +76,7 @@ module sysctrl (
   output reg        system_firesw,   // OSD id J: 1 = swap the two DB9 fire buttons
   output reg        system_numpad,   // OSD id I: 1 = keypad 1-9 act as joystick (8/2/4/6 directions, 7/9/1/3 diagonals, 5 = Fire 2 / X, 0 = Fire 1 / Z)
   output reg        system_rgbout,   // OSD id G: 1 = drive the 15 kHz RGB/CSYNC pins, 0 = high-Z (default)
-  output reg        system_vlock,    // OSD id C: HDMI frame length follows the CPC frame length
+  output reg  [1:0] system_vlock,    // OSD id C: V lock 0 = Off, 1 = On (row counter locked to the CPC VSync), 2 = Follow (On + HDMI frame length = CPC frame length when that is stable)
   output reg  [2:0] system_vrate,    // OSD id E: V lock / V pos: max. change of the HDMI frame length per frame, 1 << value rows (0..4, default 2 = 4 rows)
   output reg  [3:0] system_vpos,     // OSD id Z: vertical position, 0..15 (8 = as before), 16 HDMI rows per step
   output reg  [2:0] system_volume,   // OSD id V: HDMI audio volume 0..4 = 0 / 25 / 50 / 75 / 100 % (default 4)
@@ -163,7 +163,7 @@ always @(posedge clk) begin
       system_tapesnd <= 1'b0;
       system_volume <= 3'd4;
       system_vpos <= 4'd8;
-      system_vlock <= 1'b0;
+      system_vlock <= 2'd0;
       system_vrate <= 3'd2;
       system_rgbout <= 1'b0;
       system_firesw <= 1'b0;
@@ -267,7 +267,7 @@ always @(posedge clk) begin
                   if(id == "Y") system_model <= data_in[1:0];
                   if(id == "H") system_hpos <= data_in[3:0];
                   if(id == "Z") system_vpos <= data_in[3:0];
-                  if(id == "C") system_vlock <= data_in[0];
+                  if(id == "C") system_vlock <= data_in[1:0];   // 3 acts like 2 (Follow)
                   if(id == "E") system_vrate <= (data_in[2:0] > 3'd4) ? 3'd4 : data_in[2:0];
                   if(id == "T") system_tape_inv <= data_in[0];
                   if(id == "U") system_tape_prot <= data_in[0];
