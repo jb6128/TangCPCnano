@@ -76,10 +76,6 @@ module cpc_core #(
     input   [7:0]   fdc_buff_dout,
     input           fdc_buff_wr,
     output  [7:0]   fdc_buff_din,
-    output  [5:0]   fdc_dbg_flags,
-    output  [7:0]   fdc_dbg_msr,
-    output [10:0]   fdc_dbg_scan,
-    output [339:0]  fdc_log,      // TEMPORARY: record ports of the FDC debug log (cpc_fdc.v)
 
     // Debug : état maximal atteint par le boot loader FSM
     output reg [4:0] dbg_boot_state,
@@ -636,10 +632,6 @@ cpc_fdc fdc_inst (
     .sd_buff_addr ( fdc_buff_addr   ),
     .sd_buff_dout ( fdc_buff_dout   ),
     .sd_buff_wr   ( fdc_buff_wr     ),
-    .dbg_flags    ( fdc_dbg_flags   ),
-    .dbg_msr      ( fdc_dbg_msr     ),
-    .dbg_scan     ( fdc_dbg_scan    ),
-    .log_rec      ( fdc_log         ),
     .sd_buff_din  ( fdc_buff_din    ),
     .motor_o      (                 ),
     .ready_o      (                 )

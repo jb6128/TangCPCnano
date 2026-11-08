@@ -30,7 +30,7 @@ Added from other projects in this fork:
 | System clock | Exact 32.000 MHz system clock (PLL cascade 27 → 96 → 160 MHz), so the CPC runs at its real speed and pixel clock. | works |
 | 15 kHz RGB + CSYNC | Original CPC timing on header pins (2 bits per colour, Hi-Z unless `RGB out` is On) for RGB-to-HDMI converters or a CRT; fixed pixel phase offset. | works |
 | Start-up | ROM set / disk / tape mounts from `cpc.ini` are deferred until the cold reset is released, so the Companion and the core do not use the SD card at the same time. | works |
-| Debug LEDs | The six on-board LEDs show activity (AMSDOS, disk, tape, ROM load, tape recording, alive); holding S1/S2 shows static diagnostic pages. | works |
+| Debug LEDs | The six on-board LED0-5 show DOS, disk, tape, ROM load, tape recording and CPC alive. | works |
 
 Note: CPC464 added in v0.6, needs new `boot.rom` to be flashed!
 
@@ -41,9 +41,14 @@ Press **F12** to open the on-screen menu. Settings are stored with Settings → 
 ## Floppy
 
 `AMSDOS: Auto` means `On` for 6128/664, and `Off` for 464.
-For a 464 with floppy set AMSDOS to On, or use external DOS ROM with ROM7 EXT.
+For a 464 with floppy set AMSDOS to On, or use external DOS ROM with ROM7 EXT.  
+Eject disk by selecting `X No Disk` in root folder.
 
-Known issue: If both Drive A and B are saved in `cpc.ini`, on start-up only one drive will be ready, the other must be selected again in the OSD.
+Note: Simultaneous mount of drive A+B on start-up needed a fix in `u765.sv`.
+
+## Tape
+
+Tape sound can be turned on in the OSD Settings (`Tape sound`).
 
 ## Upper ROMs
 

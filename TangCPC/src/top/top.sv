@@ -82,10 +82,7 @@ module top (
 // ---------------------------------------------------------------------------
 // Pont UART BL616 → console externe
 // ---------------------------------------------------------------------------
-// (pin 48: BL616 console pass-through, or the TEMPORARY debug log, see the debug log block below)
-localparam DBG_LOG = 1;      // 1: pin 48 carries the debug log, 0: BL616 console pass-through as before
-wire       dbg_log_tx;
-assign bl616_mon_tx = DBG_LOG ? dbg_log_tx : uart_rx;
+assign bl616_mon_tx = uart_rx;
 
 // ---------------------------------------------------------------------------
 // PLLs
@@ -99,9 +96,6 @@ wire clk32;
 wire flash_clk;
 wire flash_clk_shifted;     // 96 MHz, phase FLASH_PSDA ("0000" = no shift in this build) → mspi_clk
 wire pll_lock_hdmi;
-wire  [5:0] fdc_dbg_flags;   // debug LEDs (S1)
-wire  [7:0] fdc_dbg_msr;     // debug LEDs (S2)
-wire [10:0] fdc_dbg_scan;   // {watchdog seen, dirty B, dirty A, ready B, ready A, scan state B (2), scan state A (2), scan lock, mount read busy}
 
 // Sorties mémoire Amstrad_motherboard (Phase 3c : connectées à SDRAM)
 wire [22:0] core_mem_addr;
@@ -552,6 +546,8 @@ wire  [7:0] sd_img_mounted;
 // Mount pulses of images 0..2 that arrive while the cold reset is held are therefore stored (with their
 // size) and replayed one after the other when the reset is released. Mounts at any other time (OSD,
 // machine running) pass through unchanged.
+// (The u765 itself stays in reset until the ROM load is done and serialises the header scans of both images,
+// including its own track offset table access, see 2.8 of the doc.)
 // ---------------------------------------------------------------------------
 wire        mnt_defer   = cold_w;
 reg         mnt_defer_d = 1'b1;
@@ -562,24 +558,6 @@ reg  [1:0]  rp_idx      = 2'd0;
 reg  [3:0]  rp_cnt      = 4'd0;
 reg  [2:0]  rp_pulse    = 3'd0;
 reg  [31:0] rp_size     = 32'd0;
-// Replay gate (2026-11-06): with disk A and disk B in cpc.ini the replayed mounts followed each other every 9 clk32
-// cycles, so the u765 scanned both images in parallel (hardware: `|b` read fail after boot, fine when only drive1 is
-// set, fine after re-selecting the file). MNT_SERIAL = 1: the next replay pulse waits until the u765 has finished the
-// header scan of the previous disk image (or MNT_TIMEOUT clk32 cycles, about 0.5 s); 0 = old behaviour.
-// Extended (2026-11-08): the u765 shares the track offset table address (image_track_offsets_addr) between the image scan,
-// the trackinfo reload (starts right after the scan, image_trackinfo_dirty) and the sector search, and the scan does not
-// look at the reload. Mounting disk B while the trackinfo of disk A was still being loaded gave disk A an "empty track"
-// (ST0 0x40, ST1 MA+ND, `read fail`) until it was mounted again. The gate therefore also waits until the previous image
-// has its trackinfo loaded (not dirty) and then for a settle time of 2^18 clk32 cycles (about 8 ms, first sector search).
-localparam       MNT_SERIAL  = 1;
-localparam [23:0] MNT_TIMEOUT = 24'hFFFFFF;
-reg  [23:0] rp_to       = 24'd0;
-wire  [1:0] fdc_scan_st = rp_idx[0] ? fdc_dbg_scan[5:4] : fdc_dbg_scan[3:2];   // scan state of the disk just mounted
-wire        fdc_scan_idle = (fdc_scan_st == 2'd0) && !fdc_dbg_scan[1] && !fdc_dbg_scan[0];
-wire        fdc_prev_rdy  = rp_idx[0] ? fdc_dbg_scan[7] : fdc_dbg_scan[6];   // u765 image_ready of the disk just mounted
-wire        fdc_prev_dirty= rp_idx[0] ? fdc_dbg_scan[9] : fdc_dbg_scan[8];   // u765 trackinfo not (yet) loaded
-wire        fdc_mnt_done  = fdc_scan_idle && !(fdc_prev_rdy && fdc_prev_dirty);
-reg  [17:0] rp_settle     = 18'd0;
 wire  [1:0] fdc_mnt     = mnt_defer ? 2'b00 : (rp_act ? rp_pulse[1:0] : sd_img_mounted[1:0]);
 wire        tape_mnt    = mnt_defer ? 1'b0  : (rp_act ? rp_pulse[2]   : sd_img_mounted[2]);
 wire [31:0] mnt_size    = rp_act ? rp_size : sd_img_size;
@@ -592,8 +570,6 @@ always @(posedge clk32) begin
         rp_act   <= 1'b0;
         rp_idx   <= 2'd0;
         rp_cnt   <= 4'd0;
-        rp_to    <= 24'd0;
-        rp_settle <= 18'd0;
     end else begin
         // store the mounts that arrive while the cold reset is held (the last one of an image wins)
         if (mnt_defer) begin
@@ -606,7 +582,6 @@ always @(posedge clk32) begin
             rp_act <= 1'b1;
             rp_idx <= 2'd0;
             rp_cnt <= 4'd0;
-            rp_to  <= 24'd0;
         end else if (rp_act) begin
             if (rp_cnt == 4'd0) begin
                 if (rp_idx == 2'd3) rp_act <= 1'b0;
@@ -618,48 +593,14 @@ always @(posedge clk32) begin
                 end else
                     rp_idx <= rp_idx + 2'd1;
             end else if (rp_cnt == 4'd8) begin
-                rp_settle <= fdc_mnt_done ? rp_settle + 18'd1 : 18'd0;
-                if (!MNT_SERIAL || rp_idx == 2'd2 || &rp_settle || rp_to == MNT_TIMEOUT) begin
-                    rp_idx <= rp_idx + 2'd1;
-                    rp_cnt <= 4'd0;
-                    rp_to  <= 24'd0;
-                    rp_settle <= 18'd0;
-                end else
-                    rp_to <= rp_to + 24'd1;
+                rp_idx <= rp_idx + 2'd1;
+                rp_cnt <= 4'd0;
             end else
                 rp_cnt <= rp_cnt + 4'd1;
         end
     end
 end
 
-// ---------------------------------------------------------------------------
-// TEMPORARY debug text log on pin 48 (bl616_mon_tx), 115200 8N1 (disk A + B problem, see doc 2.8 / cpc_fdc.v)
-//   m = raw mount pulse from sd_card (mask: bit0 disk A, bit1 disk B, bit2 tape; size big endian)
-//   N = mount pulse that reaches the core (after the cold reset deferral / replay gate), same format
-//   D = deferral / replay state: byte0 {replay active, mount deferred}, byte1 replay index
-// ---------------------------------------------------------------------------
-wire [339:0] fdc_log;
-reg          lg_raw_q = 1'b0, lg_core_q = 1'b0;
-reg    [3:0] lg_def_q = 4'd0;
-wire         lg_raw   = |sd_img_mounted[2:0];
-wire         lg_core  = |{tape_mnt, fdc_mnt};
-wire   [3:0] lg_def   = {rp_idx, rp_act, mnt_defer};
-always @(posedge clk32) begin
-    lg_raw_q  <= lg_raw;
-    lg_core_q <= lg_core;
-    lg_def_q  <= lg_def;
-end
-wire [84:0] lg_p4 = { 32'd0, sd_img_size[7:0], sd_img_size[15:8], sd_img_size[23:16], sd_img_size[31:24], 5'd0, sd_img_mounted[2:0],
-                      4'd5, "m", (lg_raw & ~lg_raw_q) } ;
-wire [84:0] lg_p5 = { 32'd0, mnt_size[7:0], mnt_size[15:8], mnt_size[23:16], mnt_size[31:24], 5'd0, tape_mnt, fdc_mnt,
-                      4'd5, "N", (lg_core & ~lg_core_q) } ;
-wire [84:0] lg_p6 = { 56'd0, 6'd0, lg_def[3:2], 6'd0, lg_def[1:0],
-                      4'd2, "D", (lg_def != lg_def_q) } ;
-dbg_uart_log #(.CLK_FREQ(32_000_000), .BAUD(115200), .NP(7)) dbg_log_inst (
-    .clk ( clk32 ),
-    .rec ( { lg_p6, lg_p5, lg_p4, fdc_log } ),
-    .tx  ( dbg_log_tx )
-);
 wire [31:0] fdc_lba;
 wire  [1:0] fdc_rd, fdc_wr;
 wire  [2:0] sd_rsrc;
@@ -749,10 +690,6 @@ cpc_core #(.FLASH_READ_DELAY(FLASH_READ_DELAY)) core_inst (
     .fdc_buff_dout   ( sd_outbyte            ),
     .fdc_buff_wr     ( sd_outen & grant_fdc    ),
     .fdc_buff_din    ( fdc_wr_data           ),
-    .fdc_dbg_flags   ( fdc_dbg_flags         ),
-    .fdc_dbg_msr     ( fdc_dbg_msr           ),
-    .fdc_dbg_scan    ( fdc_dbg_scan          ),
-    .fdc_log         ( fdc_log               ),
     // Flash SPI (via MSPI pins)
     .mspi_cs    ( mspi_cs           ),
     .mspi_di    ( mspi_di           ),

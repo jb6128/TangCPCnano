@@ -54,9 +54,7 @@ module u765 #(parameter CYCLES = 20'd4000, SPECCY_SPEEDLOCK_HACK = 0)
 	input      [8:0] sd_buff_addr,
 	input      [7:0] sd_buff_dout,
 	output     [7:0] sd_buff_din,
-	input            sd_buff_wr,
-	output reg [31:0] dbg_trk,  // TEMPORARY (UART log): {pcn B, pcn A, sectors of the current track B (side 0), A (side 0)}
-	output reg [10:0] dbg_scan  // {watchdog seen, trackinfo dirty B, trackinfo dirty A, image ready B, image ready A, scan state B (2), scan state A (2), scan lock, mount read busy} (debug LEDs, replay gate)
+	input            sd_buff_wr
 );
 
 /* verilator lint_off WIDTH */
@@ -220,8 +218,6 @@ end
 
 //// SD Card control
 
-reg        dbg_wd_seen = 1'b0;   // sticky since power-on: the 0.5 s SD watchdog dropped a request (debug LEDs)
-
 reg  [5:0] ack;
 reg  [1:0] sd_rd_mount;
 reg        sd_busy_mount;
@@ -251,7 +247,6 @@ always @(posedge clk_sys) begin : sdcontrol
 		// busy for more than 0.5 s (or controller reset): drop the request
 		if (!(sd_busy_mount | sd_busy_tinfo | sd_busy_sector)) sd_wd <= 24'd0;
 		else sd_wd <= sd_wd + 24'd1;
-		if (sd_wd[23] && !reset) dbg_wd_seen <= 1'b1;
 		if (reset || sd_wd[23]) begin
 			sd_wd <= 24'd0;
 			sd_rd <= 0;
@@ -389,8 +384,6 @@ always @(posedge clk_sys) begin : fdc
 	//reg i_mfm;
 	reg i_sk;
 
-	dbg_trk <= {pcn[1], pcn[0], i_current_track_sectors[1][0], i_current_track_sectors[0][0]};
-	dbg_scan <= {dbg_wd_seen, image_trackinfo_dirty[1], image_trackinfo_dirty[0], image_ready[1], image_ready[0], image_scan_state[1], image_scan_state[0], i_scan_lock, sd_busy_mount};
 	buff_wait <= 0;
 	tinfo_wait <= 0;
 
