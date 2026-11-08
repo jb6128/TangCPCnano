@@ -55,6 +55,7 @@ module u765 #(parameter CYCLES = 20'd4000, SPECCY_SPEEDLOCK_HACK = 0)
 	input      [7:0] sd_buff_dout,
 	output     [7:0] sd_buff_din,
 	input            sd_buff_wr,
+	output reg [31:0] dbg_trk,  // TEMPORARY (UART log): {pcn B, pcn A, sectors of the current track B (side 0), A (side 0)}
 	output reg [10:0] dbg_scan  // {watchdog seen, trackinfo dirty B, trackinfo dirty A, image ready B, image ready A, scan state B (2), scan state A (2), scan lock, mount read busy} (debug LEDs, replay gate)
 );
 
@@ -388,6 +389,7 @@ always @(posedge clk_sys) begin : fdc
 	//reg i_mfm;
 	reg i_sk;
 
+	dbg_trk <= {pcn[1], pcn[0], i_current_track_sectors[1][0], i_current_track_sectors[0][0]};
 	dbg_scan <= {dbg_wd_seen, image_trackinfo_dirty[1], image_trackinfo_dirty[0], image_ready[1], image_ready[0], image_scan_state[1], image_scan_state[0], i_scan_lock, sd_busy_mount};
 	buff_wait <= 0;
 	tinfo_wait <= 0;
@@ -427,8 +429,15 @@ always @(posedge clk_sys) begin : fdc
 		case (image_scan_state[i_current_drive])
 			0: ;//no new image
 			1: //read the first 512 byte
-				if (!sd_busy_mount & !i_scan_lock & state == COMMAND_IDLE) begin
+				// CPCTang fix: the scan uses image_track_offsets_addr, so it must own tinfo_lock like the trackinfo reload and
+				// the sector search (otherwise the sector search of the drive that is already ready moved the address while the
+				// other image was scanned: empty offset table, "empty track" / read fail). Do not start in the cycle in which a
+				// reload (seek_state 3) or the sector search (state 1, not dirty) takes the lock.
+				if (!sd_busy_mount & !i_scan_lock & !tinfo_lock & state == COMMAND_IDLE
+					& seek_state[0] != 3'd3 & seek_state[1] != 3'd3
+					& !(sector_search_state == 3'd1 & !image_trackinfo_dirty[sector_search_ds0])) begin
 					i_scan_lock <= 1;
+					tinfo_lock <= 1;
 					sd_rd_mount[i_current_drive] <= 1;
 					i_track_offset<= 16'h1; //offset 100h
 					image_track_offsets_addr <= {i_current_drive, 9'd0};
@@ -448,6 +457,7 @@ always @(posedge clk_sys) begin : fdc
 							image_ready[i_current_drive] <= 0;
 							image_scan_state[i_current_drive] <= 0;
 							i_scan_lock <= 0;
+							tinfo_lock <= 0;
 						end
 					end else if (buff_addr == 9'h30) image_tracks[i_current_drive] <= buff_data_in;
 					else if (buff_addr == 9'h31) image_sides[i_current_drive] <= buff_data_in[1];
@@ -468,6 +478,7 @@ always @(posedge clk_sys) begin : fdc
 							image_scan_state[i_current_drive] <= 0;
 							image_trackinfo_dirty[i_current_drive] <= 1;
 							i_scan_lock <= 0;
+							tinfo_lock <= 0;
 						end
 					end
 					buff_addr <= buff_addr + 1'd1;
@@ -640,7 +651,8 @@ always @(posedge clk_sys) begin : fdc
 			end
 
 			1:
-			if (!image_trackinfo_dirty[sector_search_ds0] && !tinfo_lock) begin
+			// CPCTang fix: a trackinfo reload that is waiting for the lock (seek_state 3) wins, otherwise both take it in the same cycle
+			if (!image_trackinfo_dirty[sector_search_ds0] && !tinfo_lock && seek_state[0] != 3'd3 && seek_state[1] != 3'd3) begin
 				tinfo_lock <= 1;
 				image_track_offsets_addr <= { sector_search_ds0, pcn[sector_search_ds0], sector_search_hds };
 				tinfo_wait <= 1;
