@@ -27,7 +27,7 @@
   "H"  horizontal picture position 0..8 (h_offset = 192 + 32*value, default 4)
   "T"  invert the tape input signal: normal(0), inverted(1)
   "U"  tape protection: off(0, SAVE records into the mounted tape image), on(1, default)
-  "X"  HDMI active width: 720 px (0), 800 px (1, default, wider border)
+  "X"  HDMI active width: 768 px (0, default, = RGB output window), 800 px (1, wider border)
 
     As in the C64Nano the machine is held in reset after power-up until the
     MCU releases it ("R"=0), or after a timeout of about 3 s if no companion
@@ -89,7 +89,7 @@ module sysctrl (
   output reg  [3:0] system_hpos,
   output reg        system_tape_inv,
   output reg        system_tape_prot, // OSD id U: 1 = tape protected (default), 0 = SAVE records into the tape image
-  output reg        system_w800      // OSD id X: 0 = 720 px active width, 1 = 800 px (default)
+  output reg        system_w800      // OSD id X: 0 = 768 px active width (default), 1 = 800 px
 );
 
 reg [3:0] state;
@@ -176,7 +176,7 @@ always @(posedge clk) begin
       system_hpos <= 4'd8;
       system_tape_inv <= 1'b0;
       system_tape_prot <= 1'b1;
-      system_w800 <= 1'b1;
+      system_w800 <= 1'b0;
    end else begin
       buttonsD <= buttons;
       buttonsD2 <= buttonsD;

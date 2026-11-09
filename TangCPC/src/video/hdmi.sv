@@ -90,7 +90,7 @@ wire [39:0] vtiming0  = {  10'd526, std?10'd480:10'd484,  10'd9,  10'd6 };
 wire [7:0] cea0 = 8'd2; // CEA is HDMI mode in group 1
    
 // PAL     832x576@50hz  aspect 1.44   948x576@50hz
-wire [43:0] htiming1  = { 11'd1024, std?11'd720:11'd800, 11'd24, 11'd72 };  
+wire [43:0] htiming1  = { 11'd1024, std?11'd768:11'd800, 11'd24, 11'd72 };  
 wire [39:0] vtiming1  = {  10'd624, 10'd576,  10'd5,  10'd5 };
 wire [7:0] cea1 = fullscreen ? 8'd18 : 8'd17;   // 720x576p50: VIC 17 = 4:3, VIC 18 = 16:9
    
@@ -134,7 +134,7 @@ reg [9:0] cy;
 reg       cy_pv = 1'b0;     // a row-counter load is pending (applied at the next row boundary)
 reg [9:0] cy_pn;
 // ROM load progress bar (start-up): 400 x 8 px box with a white frame, 16 cells of 25 px filled green.
-wire [10:0] bar_x     = std ? 11'd0 : 11'd40;     // progress bar stays centred in the 800 px window
+wire [10:0] bar_x     = std ? 11'd24 : 11'd40;    // progress bar stays centred in the 768 / 800 px window (the box itself is laid out for 720 px)
 wire [10:0] bx        = cx - bar_x;
 wire        bar_box   = bx >= 11'd158 && bx < 11'd562 && cy >= 10'd282 && cy < 10'd294 && cx >= bar_x;
 wire        bar_inner = bx >= 11'd160 && bx < 11'd560 && cy >= 10'd284 && cy < 10'd292 && cx >= bar_x;

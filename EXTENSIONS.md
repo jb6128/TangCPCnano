@@ -27,7 +27,7 @@ Added from other projects in this fork:
 | Upper ROM slots | Up to 16 slots in the OSD: single ROM files (16k), 16-slot ROM sets (256k), clear slot. A progress bar is shown while ROMs load. Slots 0 (BASIC) and 7 (DOS) have an internal (flash) and, optionally, an external ROM. | works |
 | Models | CPC 6128 (default), 664 and 464. | works |
 | CRTC type | OSD `CRTC type` 0 (HD6845S) or 1 (UM6845R); a change resets the machine. | works |
-| HDMI video | 720×576p50 through a scandoubler, H pos / V pos, H lock, V lock, 800 or 720 px width, green monitor mode, volume. OSD is fixed to the HDMI raster. | works (V lock: demos with changing video modes can still show dropouts) |
+| HDMI video | Scandoubler, H pos / V pos, H lock, V lock, 768 or 800 px width, green monitor mode, volume. OSD is fixed to the HDMI raster. | works (V lock: demos with changing video modes can show dropouts) |
 | System clock | Exact 32.000 MHz system clock (PLL cascade 27 → 96 → 160 MHz), so the CPC runs at its real speed and pixel clock. | works |
 | 15 kHz RGB + CSYNC | Original CPC timing on header pins (2 bits per colour, Hi-Z unless `RGB out` is On) for RGB-to-HDMI converters or a CRT; fixed pixel phase offset. | works |
 | Start-up | ROM set / disk / tape mounts from `cpc.ini` are deferred until the cold reset is released, so the Companion and the core do not use the SD card at the same time. | works |

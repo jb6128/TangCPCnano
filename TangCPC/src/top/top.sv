@@ -284,10 +284,10 @@ end
 // h_offset : décalage horizontal dans le line buffer scandoubler
 // Valeur calibrée visuellement via les boutons S1/S2 (voir ci-dessous)
 wire  [3:0] sys_hpos;   // OSD "H pos"
-wire        sys_w800;   // OSD "Width": 1 = 800 px HDMI active width (80 px wider than 720 = the visible part of a CPC line; start 40 px earlier)
+wire        sys_w800;   // OSD "Width": 1 = 800 px HDMI active width, 0 = 768 px (= 48 CRTC characters, the window of the RGB output); the window stays centred (800: starts 40 px, 768: 24 px earlier than the old 720 px window)
 // horizontal picture position: OSD "H pos", v = 0..15 shown as -8..+7 (plain unsigned value, the label is
 // only text). offset = 160 + 32*(v-8) = -96 + 32*v (mod 1024); default v=8 = 0 = offset 160, the centred picture.
-wire [9:0] h_offset_reg = 10'd928 + {1'b0, sys_hpos, 5'b00000} - (sys_w800 ? 10'd40 : 10'd0);
+wire [9:0] h_offset_reg = 10'd928 + {1'b0, sys_hpos, 5'b00000} - (sys_w800 ? 10'd40 : 10'd24);
 
 // --- Mode calibration horizontale (décommenter pour ajuster H_OFFSET) ---
 // Utilise S1 (+32 pixels) et S2 (-32 pixels) pour décaler l'image en temps réel.
@@ -1214,7 +1214,7 @@ osd_u8g2 osd_inst (
     .grid_en        ( 1'b1            ),   // OSD fixed to the HDMI raster (not to the CPC HSync / VSync)
     .gx             ( hcx             ),
     .gy             ( hcy             ),
-    .gx_off         ( sys_w800 ? 10'd112 : 10'd152 ),   // 512 - window centre column (400 resp. 360)
+    .gx_off         ( sys_w800 ? 10'd112 : 10'd128 ),   // 512 - window centre column (400 resp. 384)
     .r_in           ( sd_r            ),
     .g_in           ( sd_g            ),
     .b_in           ( sd_b            ),
@@ -1459,7 +1459,7 @@ video2hdmi video2hdmi_inst (
     .load_en      ( rom_busy     ),  // ROM load progress bar: start-up and also loads while the CPC runs (was rom_rst = start-up only)
     .load_blk     ( rom_prog     ),
     .vmode        ( 2'd1         ),  // PAL 50 Hz hardcodé (évite bascule NTSC/PAL au boot)
-    .screen       ( {1'b0, sys_w800} ),  // 0 = standard 720 px, 1 = 800 px active width (OSD 'Width')
+    .screen       ( {1'b0, sys_w800} ),  // 0 = 768 px (std), 1 = 800 px active width (OSD 'Width')
     .fullscreen   ( sys_wide     ),  // AVI InfoFrame: 16:9 (full screen) instead of 4:3
     .r            ( vid_r        ),
     .g            ( vid_g        ),
