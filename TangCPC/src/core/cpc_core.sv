@@ -53,6 +53,8 @@ module cpc_core #(
     // OSD "Model": 0 = CPC 6128, 1 = CPC 664 (664 OS + BASIC 1.1, 64 KB RAM), 2 = CPC 464 (464 OS + BASIC 1.0, 64 KB RAM).
     // Sampled while the CPC is in reset (3 is treated as 6128).
     input     [1:0] model,
+    // OSD "CRTC type": 0 = type 0 (HD6845S, a real CPC 6128), 1 = type 1 (UM6845R). Sampled while the CPC is in reset.
+    input           crtc_type,
 
     // Cassette : signal lu par le PPI (port B bit 7) et relais moteur (port C bit 4)
     input           tape_in,
@@ -655,7 +657,7 @@ Amstrad_motherboard mb (
 
     // Configuration matérielle
     .ppi_jumpers    ( 4'hF          ),  // jumpers standards CPC 6128
-    .crtc_type      ( 1'b0          ),  // CRTC type 0
+    .crtc_type      ( crtc_type     ),  // CRTC type 0 / 1 (OSD)
     .sync_filter    ( 1'b1          ),  // crt_filter (robust vsync/hsync). Test 5a97f8d with 1'b0 (raw GA sync): CSYNC ok, HDMI unchanged, no RGB flicker gain -> kept at 1
     .no_wait        ( 1'b0          ),  // wait states GA40010 actifs
     .cpu_hold       ( cpu_hold      ),

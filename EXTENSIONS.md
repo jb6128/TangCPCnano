@@ -26,6 +26,7 @@ Added from other projects in this fork:
 | Tape recording | `SAVE` is recorded into the mounted CDT (OSD `Tape prot.` = Off). The image must be a pre-made blank tape of at least 1 MB (`tools/make_blank_tape.py tape.cdt 1024`). | works |
 | Upper ROM slots | Up to 16 slots in the OSD: single ROM files (16k), 16-slot ROM sets (256k), clear slot. A progress bar is shown while ROMs load. Slots 0 (BASIC) and 7 (DOS) have an internal (flash) and, optionally, an external ROM. | works |
 | Models | CPC 6128 (default), 664 and 464. | works |
+| CRTC type | OSD `CRTC type` 0 (HD6845S) or 1 (UM6845R); a change resets the machine. | works |
 | HDMI video | 720×576p50 through a scandoubler, H pos / V pos, H lock, V lock, 800 or 720 px width, green monitor mode, volume. OSD is fixed to the HDMI raster. | works (V lock: demos with changing video modes can still show dropouts) |
 | System clock | Exact 32.000 MHz system clock (PLL cascade 27 → 96 → 160 MHz), so the CPC runs at its real speed and pixel clock. | works |
 | 15 kHz RGB + CSYNC | Original CPC timing on header pins (2 bits per colour, Hi-Z unless `RGB out` is On) for RGB-to-HDMI converters or a CRT; fixed pixel phase offset. | works |
@@ -40,9 +41,15 @@ Press **F12** to open the on-screen menu. Settings are stored with Settings → 
 
 ## Settings
 
+### CRTC type
+
+Some demos only sync correctly with type 1 (e.g. Pinball Dreams, Batman Forever).
+
 ### HDMI video
 
-`V lock:` `On`= selectable correction `V rate` , `Follow`= HDMI frame length follows a stable CPC frame length.
+`V lock:` `On`= selectable correction `V rate` , `Follow`= HDMI frame length follows a stable CPC frame length.  
+Jet Set Willy needs `V lock: Follow`.  
+Manic Miner needs `H lock: On`.
 
 Note: `V lock` can cause the HDMI monitor to resync.
 
@@ -119,7 +126,7 @@ monitor, and also fine for 75 Ω RGB-to-HDMI converters (about 0.8 V).
 ## Known limitations
 
 - The OSD menu cannot show which ROM slots are loaded.
-- Some games or demos that change the CRTC timing (e.g. Jet Set Willy, Batman Forever) show brief picture dropouts or a rolling picture on HDMI; a frame buffer would be needed to retime them. Try option `V lock: Follow`.
+- Some games or demos that change the CRTC timing (e.g. Jet Set Willy) show a rolling picture on HDMI. If `CRTC: 1` does not help, try option `V lock: Follow`. However `V lock` can show brief picture dropouts on HDMI when the monitor resyncs; a frame buffer would be needed to retime them.
 - A phantom "cursor right" can appear when the monitor is switched to the HDMI input (floating DB9 RIGHT line); it is not fully explained.
 - The Pico UART keyboard path is still in the RTL but is not used by the current setup.
 - The OSS toolchain build (`tools/build_oss.sh`) is parked (placement fails); use the Gowin flow.

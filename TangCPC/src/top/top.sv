@@ -474,14 +474,17 @@ wire  [1:0] sys_reset_w;
 // the firmware rescans the upper ROMs and the video sync (vreset) is re-aligned.
 // A ROM load only freezes the Z80 (cpu_hold = rom_busy); there is no reset any more. A new ROM is
 // found by the firmware at the next reset, which the user triggers from the OSD when wanted.
-// OSD "Model" (6128/664/464): a change of the setting triggers a reset of ~32 ms so that the other ROM
+// OSD "Model" (6128/664/464) and "CRTC type": a change of the setting triggers a reset of ~32 ms so that the other ROM
 // set is used immediately (the core samples the model while it is in reset).
 wire  [1:0] sys_model;
+wire        sys_crtc;
 reg   [1:0] model_d = 2'd0;
+reg         crtc_d = 1'b1;
 reg  [20:0] model_rst_cnt = 21'd0;
 always @(posedge clk32) begin
     model_d <= sys_model;
-    if (model_d != sys_model)       model_rst_cnt <= 21'h1FFFFF;
+    crtc_d  <= sys_crtc;
+    if (model_d != sys_model || crtc_d != sys_crtc) model_rst_cnt <= 21'h1FFFFF;
     else if (model_rst_cnt != 21'd0) model_rst_cnt <= model_rst_cnt - 21'd1;
 end
 wire        model_rst = (model_rst_cnt != 21'd0);
@@ -675,6 +678,7 @@ cpc_core #(.FLASH_READ_DELAY(FLASH_READ_DELAY)) core_inst (
     // Disquettes (Étape 1)
     .sys_reset       ( cpc_reset_w           ),
     .model           ( sys_model             ),
+    .crtc_type       ( sys_crtc              ),
     .tape_in         ( tape_in_w             ),
     .tape_motor      ( tape_motor_w          ),
     .tape_out        ( tape_out_w            ),
@@ -939,6 +943,7 @@ sysctrl sysctrl_inst (
     .system_numpad       ( sys_numpad       ),
     .system_wide         ( sys_wide         ),
     .system_model       ( sys_model        ),
+    .system_crtc        ( sys_crtc         ),
     .system_hpos         ( sys_hpos         ),
     .system_tape_inv     ( sys_tape_inv     ),
     .system_tape_prot    ( sys_tape_prot    ),

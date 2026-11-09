@@ -23,6 +23,7 @@
   "O"  ROM0: internal BASIC (0) / external ROM in slot 0 (1)
   "o"  ROM7: internal DOS (0) / external ROM in slot 7 (1)
   "W"  Z80 waits for SDRAM data: off(0, test only), on(1)
+  "c"  CRTC type: 0 (HD6845S / UM6845, default) or 1 (UM6845R); a change triggers a reset
   "H"  horizontal picture position 0..8 (h_offset = 192 + 32*value, default 4)
   "T"  invert the tape input signal: normal(0), inverted(1)
   "U"  tape protection: off(0, SAVE records into the mounted tape image), on(1, default)
@@ -82,6 +83,7 @@ module sysctrl (
   output reg  [2:0] system_volume,   // OSD id V: HDMI audio volume 0..4 = 0 / 25 / 50 / 75 / 100 % (default 4)
   output reg        system_tapesnd,  // OSD id N: 1 = tape signal audible on the HDMI audio
   output reg        system_mono,     // OSD id M: 0 = colour, 1 = green monitor
+  output reg        system_crtc,     // OSD id c: CRTC type 0 / 1 (default 1)
   output reg  [1:0] system_model,    // OSD id Y: 0 = CPC 6128 (OS, BASIC 1.1, 128K), 1 = CPC 664 (OS, BASIC 1.1, 64K), 2 = CPC 464 (OS, BASIC 1.0, 64K); effective at the next reset
   output reg        system_wide,     // OSD id D: 0 = 4:3, 1 = full screen (16:9 flag)
   output reg  [3:0] system_hpos,
@@ -170,6 +172,7 @@ always @(posedge clk) begin
       system_numpad <= 1'b0;
       system_wide <= 1'b0;
       system_model <= 2'd0;
+      system_crtc <= 1'b1;
       system_hpos <= 4'd8;
       system_tape_inv <= 1'b0;
       system_tape_prot <= 1'b1;
@@ -265,6 +268,7 @@ always @(posedge clk) begin
                   if(id == "I") system_numpad <= data_in[0];
                   if(id == "D") system_wide <= data_in[0];
                   if(id == "Y") system_model <= data_in[1:0];
+                  if(id == "c") system_crtc <= data_in[0];
                   if(id == "H") system_hpos <= data_in[3:0];
                   if(id == "Z") system_vpos <= data_in[3:0];
                   if(id == "C") system_vlock <= data_in[1:0];   // 3 acts like 2 (Follow)

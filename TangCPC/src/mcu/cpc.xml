@@ -14,6 +14,7 @@
     <!-- default value of every option (same as the default= attributes of the menu below) -->
     <action name="defaults">
       <set id="Y" value="0"/>
+      <set id="c" value="1"/>
       <set id="T" value="0"/>
       <set id="U" value="1"/>
       <set id="P" value="0"/>
@@ -163,6 +164,10 @@
         <listentry label="6128" value="0"/>
         <listentry label="664" value="1"/>
         <listentry label="464" value="2"/>
+      </list>
+      <list label="CRTC type:" id="c" default="1">
+        <listentry label="0" value="0"/>
+        <listentry label="1" value="1"/>
       </list>
       <list label="H pos:" id="H" default="8">
         <listentry label="-8" value="0"/>
