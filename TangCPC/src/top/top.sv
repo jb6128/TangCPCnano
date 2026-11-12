@@ -1168,7 +1168,7 @@ scandoubler #(.HCNT_WIDTH(10)) scandoubler_inst (
 
     .r_in       ( cm_r[7:4]     ),    // 4 bits MSB du 8-bit
     .g_in       ( cm_g[7:4]     ),
-    .b_in       ( cm_b[7:4]     ),
+    .b_in       ( sys_mono ? {cm_g[3:2], 2'b00} : cm_b[7:4] ),   // green monitor: B (always 0) carries G bits 3:2
     .hs_in      ( cm_hs         ),
     .vs_in      ( cm_vs         ),
 
@@ -1182,6 +1182,11 @@ scandoubler #(.HCNT_WIDTH(10)) scandoubler_inst (
     .hs_out     ( sd_hs         ),
     .vs_out     ( sd_vs         )
 );
+
+// Green monitor: the scandoubler line buffer is 4 bit per channel. B is unused in this mode, so G[3:2] of color_mix
+// (needed to tell the 27 inks apart) is carried in its place: sd_b[5:4]. 6-bit green = {G[7:4], G[3:2]}.
+wire [5:0] sd_g_f = sys_mono ? {sd_g[5:2], sd_b[5:4]} : sd_g;
+wire [5:0] sd_b_f = sys_mono ? 6'd0                   : sd_b;
 
 // -- Étage 3 : video2hdmi — TMDS --
 // Audio : YM2149 (8 bits non signés, ~0..190) -> 16 bits signés, composante continue retirée
@@ -1223,8 +1228,8 @@ osd_u8g2 osd_inst (
     .gy             ( hcy             ),
     .gx_off         ( sys_w800 ? 10'd112 : 10'd128 ),   // 512 - window centre column (400 resp. 384)
     .r_in           ( sd_r            ),
-    .g_in           ( sd_g            ),
-    .b_in           ( sd_b            ),
+    .g_in           ( sd_g_f          ),
+    .b_in           ( sd_b_f          ),
     .r_out          ( vid_r           ),
     .g_out          ( vid_g           ),
     .b_out          ( vid_b           )
