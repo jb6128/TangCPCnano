@@ -31,6 +31,7 @@
       <set id="S" value="1"/>
       <set id="M" value="0"/>
       <set id="G" value="0"/>
+      <set id="p" value="0"/>
       <set id="N" value="0"/>
       <set id="V" value="4"/>
       <set id="J" value="0"/>
@@ -169,6 +170,31 @@
         <listentry label="0" value="0"/>
         <listentry label="1" value="1"/>
       </list>
+      <list label="Volume:" id="V" default="4">
+        <listentry label="0%" value="0"/>
+        <listentry label="25%" value="1"/>
+        <listentry label="50%" value="2"/>
+        <listentry label="75%" value="3"/>
+        <listentry label="100%" value="4"/>
+      </list>
+      <list label="Tape sound:" id="N" default="0">
+        <listentry label="Off" value="0"/>
+        <listentry label="On" value="1"/>
+      </list>
+      <list label="DB9-Fire:" id="J" default="0">
+        <listentry label="swap Off" value="0"/>
+        <listentry label="swap On" value="1"/>
+      </list>
+      <list label="Num Joystick:" id="I" default="0">
+        <listentry label="Off" value="0"/>
+        <listentry label="On" value="1"/>
+      </list>
+      <list label="SDRAM wait:" id="W" default="1">
+        <listentry label="On" value="1"/>
+        <listentry label="Off (test)" value="0"/>
+      </list>
+    </menu>
+    <menu label="Video Settings">
       <list label="H pos:" id="H" default="8">
         <listentry label="-8" value="0"/>
         <listentry label="-7" value="1"/>
@@ -233,31 +259,14 @@
         <listentry label="Off (Hi-Z)" value="0"/>
         <listentry label="On" value="1"/>
       </list>
-      <list label="Tape sound:" id="N" default="0">
-        <listentry label="Off" value="0"/>
-        <listentry label="On" value="1"/>
+      <list label="RGB phase:" id="p" default="0">
+        <listentry label="0 ns" value="0"/>
+        <listentry label="+16 ns" value="1"/>
+        <listentry label="+31 ns" value="2"/>
+        <listentry label="+47 ns" value="3"/>
       </list>
-      <list label="Volume:" id="V" default="4">
-        <listentry label="0%" value="0"/>
-        <listentry label="25%" value="1"/>
-        <listentry label="50%" value="2"/>
-        <listentry label="75%" value="3"/>
-        <listentry label="100%" value="4"/>
-      </list>
-      <list label="DB9-Fire:" id="J" default="0">
-        <listentry label="swap Off" value="0"/>
-        <listentry label="swap On" value="1"/>
-      </list>
-      <list label="Num Joystick:" id="I" default="0">
-        <listentry label="Off" value="0"/>
-        <listentry label="On" value="1"/>
-      </list>
-      <list label="SDRAM wait:" id="W" default="1">
-        <listentry label="On" value="1"/>
-        <listentry label="Off (test)" value="0"/>
-      </list>
-      <button label="Save settings" action="save"/>
     </menu>
+    <button label="Save settings" action="save"/>
     <button label="Reset" action="reset_hide"/>
     <button label="Cold boot" action="cold_reset_hide"/>
     <button label="Factory boot" action="factory_reset_hide"/>

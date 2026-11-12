@@ -12,7 +12,7 @@ Added from other projects in this fork:
 ## Setup assumed
 
 - Tang Nano 20K with the **FPGA Companion** on the SPI link: it provides the USB keyboard/joystick, the SD card access and the on-screen menu (OSD) file selectors.
-- Settings and mounted images are stored in `cpc.ini` on the SD card (OSD: Settings → Save settings).
+- Settings and mounted images are stored in `cpc.ini` on the SD card (OSD: Save settings).
 - ROMs for OS and BASIC for 6128/664/464, plus AMSDOS come from the flash (`TangCPC/boot.rom`, offset `0x200000`).
 
 ## Features
@@ -27,9 +27,9 @@ Added from other projects in this fork:
 | Upper ROM slots | Up to 16 slots in the OSD: single ROM files (16k), 16-slot ROM sets (256k), clear slot. A progress bar is shown while ROMs load. Slots 0 (BASIC) and 7 (DOS) have an internal (flash) and, optionally, an external ROM. | works |
 | Models | CPC 6128 (default), 664 and 464. | works |
 | CRTC type | OSD `CRTC type` 0 (HD6845S) or 1 (UM6845R); a change resets the machine. | works |
-| HDMI video | Scandoubler, H pos / V pos, H lock, V lock, 768 or 800 px width, green monitor mode, volume. OSD is fixed to the HDMI raster. | works (V lock: demos with changing video modes can show dropouts) |
+| HDMI video | Scandoubler, H pos / V pos, H lock, V lock, 768 or 800 px width, green monitor mode. OSD is fixed to the HDMI raster. | works (V lock: changing video modes can show dropouts) |
 | System clock | Exact 32.000 MHz system clock (PLL cascade 27 → 96 → 160 MHz), so the CPC runs at its real speed and pixel clock. | works |
-| 15 kHz RGB + CSYNC | Original CPC timing on header pins (2 bits per colour, Hi-Z unless `RGB out` is On) for RGB-to-HDMI converters or a CRT; fixed pixel phase offset. | works |
+| 15 kHz RGB + CSYNC | Original CPC timing on header pins (2 bits per colour, Hi-Z unless `RGB out` is On) for RGB-to-HDMI converters or a CRT; pixel phase offset adjustable. | works |
 | Start-up | ROM set / disk / tape mounts from `cpc.ini` are deferred until the cold reset is released, so the Companion and the core do not use the SD card at the same time. | works |
 | Debug LEDs | The six on-board LED0-5 show DOS, disk, tape, ROM load, tape recording and CPC alive. | works |
 
@@ -37,9 +37,9 @@ Note: CPC464 added in v0.6, needs new `boot.rom` to be flashed!
 
 ## OSD menu
 
-Press **F12** to open the on-screen menu. Settings are stored with Settings → Save settings (`cpc.ini`). **Cold boot** behaves like a power-on (`cpc.ini` is loaded again), **Factory boot** starts with all settings at their defaults and without external ROMs (`cpc.ini` is neither read nor changed).
+Press **F12** to open the on-screen menu. Settings are stored with **Save settings** (`cpc.ini`). **Cold boot** behaves like a power-on (`cpc.ini` is loaded again), **Factory boot** starts with all settings at their defaults and without external ROMs (`cpc.ini` is neither read nor changed).
 
-## Settings
+## Settings / Video Settings
 
 ### CRTC type
 
@@ -102,7 +102,7 @@ Note: Do not connect DB9 pin 5/7 (+5 V).
 
 Right header: 72, 71 | 55, 49 (GND next to them); left header: 73, 74 and 77. Drive 8 mA. Notes: pin 49 is also `LCD_BL` (do not attach an LCD to the FPC socket); pin 55 is also `I2S_LRCK` of the on-board audio amplifier (harmless while `PA_EN` is not driven). The pins are high impedance until the OSD option `RGB out` is set to On.
 
-Pins are 3V3. Connect CSYNC through a 470 Ω resistor and the colour pins through a 2-bit DAC:
+Pins are 3V3. Connect CSYNC through 330...470 Ω resistor. VGA4CPC didn't sync with 470 Ω, but 420 Ω worked fine. You can adjust the RGB phase in the **Video Settings**. Connect the colour pins through a 2-bit DAC:
 ```
 FPGA bit 1 pin ──[ R ]──┐
                         ├──●── colour output ──► monitor input (75 or 100 Ω to GND)

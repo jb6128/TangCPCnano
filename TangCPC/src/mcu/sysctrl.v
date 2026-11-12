@@ -77,6 +77,7 @@ module sysctrl (
   output reg        system_firesw,   // OSD id J: 1 = swap the two DB9 fire buttons
   output reg        system_numpad,   // OSD id I: 1 = keypad 1-9 act as joystick (8/2/4/6 directions, 7/9/1/3 diagonals, 5 = Fire 2 / X, 0 = Fire 1 / Z)
   output reg        system_rgbout,   // OSD id G: 1 = drive the 15 kHz RGB/CSYNC pins, 0 = high-Z (default)
+  output reg  [1:0] system_rgbph,    // OSD id p: RGB phase = delay of the RGB lines against CSYNC, 0 = 0 ns (default), 1 = +16 ns, 2 = +31 ns, 3 = +47 ns
   output reg  [1:0] system_vlock,    // OSD id C: V lock 0 = Off, 1 = On (row counter locked to the CPC VSync), 2 = Follow (On + HDMI frame length = CPC frame length when that is stable)
   output reg  [2:0] system_vrate,    // OSD id E: V lock / V pos: max. change of the HDMI frame length per frame, 1 << value rows (0..4, default 2 = 4 rows)
   output reg  [3:0] system_vpos,     // OSD id Z: vertical position, 0..15 (8 = as before), 16 HDMI rows per step
@@ -168,6 +169,7 @@ always @(posedge clk) begin
       system_vlock <= 2'd0;
       system_vrate <= 3'd2;
       system_rgbout <= 1'b0;
+      system_rgbph <= 2'd0;
       system_firesw <= 1'b0;
       system_numpad <= 1'b0;
       system_wide <= 1'b0;
@@ -264,6 +266,7 @@ always @(posedge clk) begin
                   if(id == "N") system_tapesnd <= data_in[0];
                   if(id == "V") system_volume <= (data_in[2:0] > 3'd4) ? 3'd4 : data_in[2:0];
                   if(id == "G") system_rgbout <= data_in[0];
+                  if(id == "p") system_rgbph <= data_in[1:0];
                   if(id == "J") system_firesw <= data_in[0];
                   if(id == "I") system_numpad <= data_in[0];
                   if(id == "D") system_wide <= data_in[0];

@@ -528,6 +528,7 @@ wire        sys_follow = sys_vlock[1];      // Follow: the HDMI frame length als
 wire  [2:0] sys_vrate;                      // OSD "V rate": 1 << value rows per frame
 wire        vreset_any;                 // = vreset_pulse (full HDMI re-alignment; 'V pos' only loads the row counter, see below)
 wire        sys_rgbout;
+wire  [1:0] sys_rgbph;
 wire        sys_firesw;
 wire        sys_numpad;
 wire        sys_wide;
@@ -939,6 +940,7 @@ sysctrl sysctrl_inst (
     .system_vlock        ( sys_vlock        ),
     .system_vrate        ( sys_vrate        ),
     .system_rgbout       ( sys_rgbout       ),
+    .system_rgbph        ( sys_rgbph        ),
     .system_firesw       ( sys_firesw       ),
     .system_numpad       ( sys_numpad       ),
     .system_wide         ( sys_wide         ),
@@ -1121,31 +1123,36 @@ always @(posedge clk32) begin
     rgb_b_r <= core_blank ? 2'b00 : {core_blue[0]  | core_blue[1],  core_blue[1]  & ~core_blue[0]};
     csync_r <= ~(core_hsync ^ core_vsync);
 end
-// Fixed RGB phase: the RGB lines are delayed against CSYNC (csync_r, never delayed). A converter that samples
+// RGB phase (OSD 'RGB phase', id p): the RGB lines are delayed against CSYNC (csync_r, never delayed). A converter that samples
 // the RGB lines with its own fixed phase (VGA4CPC) flickers when the exact 16 MHz pixel edges coincide with its
 // sampling instant. Measured on hardware (old 6.25 ns chain / half-period steps): VGA4CPC quiet at +16 and
 // +31 ns, flicker at 0 ns (left border at +47 ns); RGBtoHDMI quiet at 0, +16 and +47 ns, flicker at +31 ns.
-// -> +16 ns suits both and is the value used here.
+// With a 420 ohm CSYNC resistor (330..470 ohm range, see EXTENSIONS.md) the user found (delay = menu label): RGBtoHDMI
+// flickers at +31 ns and is best at 0 ns; VGA4CPC flickers at +16 ns and is best at +47 ns. RGBtoHDMI has priority ->
+// default 0 ns (value 0).
+// The menu label is the real delay against CSYNC: 0 / +16 / +31 / +47 ns.
 //
 // The delay is set by WHICH register drives the pins (all in the clk32 domain, no clock crossing; one step =
 // half a clk32 period = 15.6 ns; the CPC pixel is 62.5 ns):
-//     delay (this file)      pins driven by                                          old menu label (e8e7d04)
-//       0 ns                 {rgb_r_r, rgb_g_r, rgb_b_r}  (posedge clk32 registers)  "-16 ns"
-//     +16 ns  (USED)         rgb_n1   (negedge clk32 copy of the above)              "0 ns"
-//     +31 ns                 rgb_p2   (posedge copy of rgb_n1)                       "+16 ns"
-//     +47 ns                 rgb_n2   (negedge copy of rgb_p2)                       "+31 ns"
-// To change it: add the copy registers, e.g.
-//     reg [5:0] rgb_p2; always @(posedge clk32) rgb_p2 <= rgb_n1;      // +31 ns
-//     reg [5:0] rgb_n2; always @(negedge clk32) rgb_n2 <= rgb_p2;      // +47 ns
-// and use that register in the three assigns below.
+//     delay = menu label     pins driven by                                          value
+//       0 ns  (default)      {rgb_r_r, rgb_g_r, rgb_b_r}  (posedge clk32 registers)    0
+//     +16 ns                 rgb_n1   (negedge clk32 copy of the above)                1
+//     +31 ns                 rgb_p2   (posedge copy of rgb_n1)                         2
+//     +47 ns                 rgb_n2   (negedge copy of rgb_p2)                         3
+// The copies run all the time; 'sys_rgbph' only selects which one drives the pins (a change shows up at once).
 // Intermediate values are not possible in this domain (resolution = half a clk32 period). 6.25 ns steps need a
 // clk160 delay chain (tried in e760958 / 97de0e7: clk32 -> clk160 crossing, timing violations, boot failures);
 // an IODELAY primitive on the output pins would be the other way (not tried).
-reg [5:0] rgb_n1;
+reg [5:0] rgb_n1, rgb_p2, rgb_n2;
 always @(negedge clk32) rgb_n1 <= {rgb_r_r, rgb_g_r, rgb_b_r};
-assign rgb_r = sys_rgbout ? rgb_n1[5:4] : 2'bzz;
-assign rgb_g = sys_rgbout ? rgb_n1[3:2] : 2'bzz;
-assign rgb_b = sys_rgbout ? rgb_n1[1:0] : 2'bzz;
+always @(posedge clk32) rgb_p2 <= rgb_n1;
+always @(negedge clk32) rgb_n2 <= rgb_p2;
+wire [5:0] rgb_ph = (sys_rgbph == 2'd0) ? {rgb_r_r, rgb_g_r, rgb_b_r} :
+                    (sys_rgbph == 2'd1) ? rgb_n1 :
+                    (sys_rgbph == 2'd2) ? rgb_p2 : rgb_n2;
+assign rgb_r = sys_rgbout ? rgb_ph[5:4] : 2'bzz;
+assign rgb_g = sys_rgbout ? rgb_ph[3:2] : 2'bzz;
+assign rgb_b = sys_rgbout ? rgb_ph[1:0] : 2'bzz;
 assign csync = sys_rgbout ? csync_r : 1'bz;
 
 // -- Étage 2 : scandoubler — 15kHz → 31kHz --
