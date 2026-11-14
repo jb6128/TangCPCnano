@@ -31,13 +31,16 @@ Added from other projects in this fork:
 | System clock | Exact 32.000 MHz system clock (PLL cascade 27 → 96 → 160 MHz), so the CPC runs at its real speed and pixel clock. | works |
 | 15 kHz RGB + CSYNC | Original CPC timing on header pins (2 bits per colour, Hi-Z unless `RGB out` is On) for RGB-to-HDMI converters or a CRT; pixel phase offset adjustable. | works |
 | Start-up | ROM set / disk / tape mounts from `cpc.ini` are deferred until the cold reset is released, so the Companion and the core do not use the SD card at the same time. | works |
-| Debug LEDs | The six on-board LED0-5 show DOS, disk, tape, ROM load, tape recording and CPC alive. | works |
+| Status LEDs | The six on-board LED0-5 show DOS, disk, tape, ROM load, tape recording and CPC alive. | works |
+| Debug | 64 KB RAM snapshot. | works |
 
 Note: CPC464 added in v0.6, needs new `boot.rom` to be flashed!
 
 ## OSD menu
 
 Press **F12** to open the on-screen menu. Settings are stored with **Save settings** (`cpc.ini`). **Cold boot** behaves like a power-on (`cpc.ini` is loaded again), **Factory boot** starts with all settings at their defaults and without external ROMs (`cpc.ini` is neither read nor changed).
+
+**Debug** option `Snapshot`: `Off` / `S1+S2`. With `S1+S2` pressing S1 and S2 together sends a 64 KB RAM snapshot (including a header) over UART (pin 48, 115200/460800/921600 8N1) and halts the Z80 meanwhile. See `snap_check.py` and `snap_to_png.py` in `tools/`.
 
 ## Settings / Video Settings
 

@@ -83,6 +83,8 @@ module sysctrl (
   output reg  [3:0] system_vpos,     // OSD id Z: vertical position, 0..15 (8 = as before), 16 HDMI rows per step
   output reg  [2:0] system_volume,   // OSD id V: HDMI audio volume 0..4 = 0 / 25 / 50 / 75 / 100 % (default 4)
   output reg        system_tapesnd,  // OSD id N: 1 = tape signal audible on the HDMI audio
+  output reg        system_snap,     // OSD id d (Debug / Snapshot): 1 = pin 48 carries the snapshot UART and S1+S2 take a RAM snapshot, 0 = BL616 console bridge (default)
+  output reg  [1:0] system_uart,     // OSD id u (Debug / UART): baud rate of the snapshot UART, 0 = 115200, 1 = 460800, 2 = 921600 (default), 3 acts like 2
   output reg        system_mono,     // OSD id M: 0 = colour, 1 = green monitor
   output reg        system_crtc,     // OSD id c: CRTC type 0 / 1 (default 1)
   output reg  [1:0] system_model,    // OSD id Y: 0 = CPC 6128 (OS, BASIC 1.1, 128K), 1 = CPC 664 (OS, BASIC 1.1, 64K), 2 = CPC 464 (OS, BASIC 1.0, 64K); effective at the next reset
@@ -163,6 +165,8 @@ always @(posedge clk) begin
       system_waitgate <= 1'b1;
       system_hlock <= 1'b1;
       system_mono <= 1'b0;
+      system_snap <= 1'b0;
+      system_uart <= 2'd2;
       system_tapesnd <= 1'b0;
       system_volume <= 3'd4;
       system_vpos <= 4'd8;
@@ -263,6 +267,8 @@ always @(posedge clk) begin
                   if(id == "W") system_waitgate <= data_in[0];
                   if(id == "S") system_hlock <= data_in[0];
                   if(id == "M") system_mono <= data_in[0];
+                  if(id == "d") system_snap <= data_in[0];
+                  if(id == "u") system_uart <= data_in[1:0];
                   if(id == "N") system_tapesnd <= data_in[0];
                   if(id == "V") system_volume <= (data_in[2:0] > 3'd4) ? 3'd4 : data_in[2:0];
                   if(id == "G") system_rgbout <= data_in[0];

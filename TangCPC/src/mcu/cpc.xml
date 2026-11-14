@@ -20,7 +20,7 @@
       <set id="P" value="0"/>
       <set id="F" value="0"/>
       <set id="L" value="1"/>
-      <set id="A" value="0"/>
+      <set id="A" value="2"/>
       <set id="O" value="0"/>
       <set id="o" value="0"/>
       <set id="H" value="8"/>
@@ -37,6 +37,8 @@
       <set id="J" value="0"/>
       <set id="I" value="0"/>
       <set id="W" value="1"/>
+      <set id="d" value="0"/>
+      <set id="u" value="2"/>
     </action>
 
     <!-- executed once all initialization has been done -->
@@ -264,6 +266,17 @@
         <listentry label="+16 ns" value="1"/>
         <listentry label="+31 ns" value="2"/>
         <listentry label="+47 ns" value="3"/>
+      </list>
+    </menu>
+    <menu label="Debug">
+      <list label="Snapshot:" id="d" default="0">
+        <listentry label="Off" value="0"/>
+        <listentry label="S1+S2" value="1"/>
+      </list>
+      <list label="UART:" id="u" default="2">
+        <listentry label="115200" value="0"/>
+        <listentry label="460800" value="1"/>
+        <listentry label="921600" value="2"/>
       </list>
     </menu>
     <button label="Save settings" action="save"/>

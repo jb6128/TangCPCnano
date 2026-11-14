@@ -82,7 +82,11 @@ module top (
 // ---------------------------------------------------------------------------
 // Pont UART BL616 → console externe
 // ---------------------------------------------------------------------------
-assign bl616_mon_tx = uart_rx;
+// OSD Debug / Snapshot: Off = the BL616 console bridge as before, S1+S2 = the RAM snapshot UART (cpc_snapshot, idle high)
+wire        snap_tx;
+wire        sys_snap;
+wire  [1:0] sys_uart;                        // OSD Debug / UART: baud rate of the snapshot UART (0 = 115200, 1 = 460800, 2 = 921600)
+assign bl616_mon_tx = sys_snap ? snap_tx : uart_rx;
 
 // ---------------------------------------------------------------------------
 // PLLs
@@ -107,6 +111,9 @@ wire [14:0] core_vram_addr;
 // Bus CPU Amstrad_motherboard (Phase 3c)
 wire [15:0] core_cpu_addr;
 wire  [7:0] core_cpu_dout;
+wire  [7:0] snap_rsel, snap_mmr, snap_gam;   // DEBUG snapshot header values from cpc_core
+wire [127:0] snap_crtc;                      // CRTC R0..R15 as last written
+wire  [84:0] snap_pal;                       // Gate Array palette (17 x 5 bit)
 
 // Signaux de cpc_core (déclarés ici : utilisés par le mux du port Boot)
 wire        boot_busy_w;
@@ -337,23 +344,6 @@ wire [5:0] led_crtc = {
     ~vsync_cnt[4],              // [1] ~1.6 Hz si 50 Hz vsync
     ~core_readback_ok           // [0] ROM OK
 };
-// S1 + S2 together: address of the last opcode fetch, one snapshot every 4 s:
-//   1 s all LEDs on (marker), then PC[15:10], PC[9:4], {PC[3:0],00}, 1 s each (lit = 1)
-reg [26:0] pcshow_cnt;
-reg [15:0] pcshow_snap;
-always @(posedge clk32) begin
-    pcshow_cnt <= pcshow_cnt + 27'd1;
-    if (pcshow_cnt[26:25] == 2'd0) pcshow_snap <= core_dbg_pc;   // frozen for the other 3 steps
-end
-reg [5:0] pcshow_leds;
-always @* begin
-    case (pcshow_cnt[26:25])
-        2'd0:    pcshow_leds = 6'b111111;
-        2'd1:    pcshow_leds = pcshow_snap[15:10];
-        2'd2:    pcshow_leds = pcshow_snap[9:4];
-        default: pcshow_leds = {pcshow_snap[3:0], 2'b00};
-    endcase
-end
 reg  disc_led = 1'b0, tape_led = 1'b0, rom_led = 1'b0;   // driven below, after the FDC/tape wires
 reg  tape_rec_ind = 1'b0;           // LED4: SAVE recording in progress / failed
 wire db9_any = (io != 6'b111111);   // any DB9 line low
@@ -404,11 +394,15 @@ wire        rl_sel = core_wr_rd_done;
 wire [22:0] rl_addr;
 wire  [7:0] rl_din;
 wire        rl_req;
-wire [22:0] boot_addr_w = rl_sel ? rl_addr : core_boot_addr;
+// DEBUG snapshot (cpc_snapshot, OSD Debug / Snapshot): while it runs it owns the boot port and reads the RAM
+wire        snap_busy;
+wire [22:0] snap_addr;
+wire        snap_req;
+wire [22:0] boot_addr_w = snap_busy ? snap_addr : (rl_sel ? rl_addr : core_boot_addr);
 wire  [7:0] boot_din_w  = rl_sel ? rl_din  : core_boot_din;
 wire  [7:0] boot_dout_w;
-wire        boot_req_w  = rl_sel ? rl_req  : core_boot_req;
-wire        boot_we_w   = rl_sel ? 1'b1    : core_boot_we;
+wire        boot_req_w  = snap_busy ? snap_req : (rl_sel ? rl_req : core_boot_req);
+wire        boot_we_w   = snap_busy ? 1'b0     : (rl_sel ? 1'b1   : core_boot_we);
 wire        boot_ack_w;
 assign core_boot_dout = boot_dout_w;
 assign core_boot_ack  = boot_ack_w;
@@ -668,7 +662,7 @@ cpc_core #(.FLASH_READ_DELAY(FLASH_READ_DELAY)) core_inst (
     .flash_clk  ( flash_clk         ),
     .por        ( por                ),
     .cold_boot       ( cold_w                ),
-    .cpu_hold        ( rom_busy              ),
+    .cpu_hold        ( rom_busy | snap_busy  ),
     .boot_busy       ( boot_busy_w           ),
     .sdram_rdy       ( sdram_ready           ),
     .dbg_boot_state  ( core_dbg_boot_state   ),
@@ -739,6 +733,11 @@ cpc_core #(.FLASH_READ_DELAY(FLASH_READ_DELAY)) core_inst (
     // Bus CPU (Phase 3c)
     .cpu_addr   ( core_cpu_addr     ),
     .cpu_dout   ( core_cpu_dout     ),
+    .snap_rsel  ( snap_rsel         ),
+    .snap_mmr   ( snap_mmr          ),
+    .snap_gam   ( snap_gam          ),
+    .snap_crtc  ( snap_crtc         ),
+    .snap_pal   ( snap_pal          ),
     .cpu_din    ( cpu_dout_w        ),  // données SDRAM → Z80 (lecture)
     .cpu_ack_in ( cpu_ack_w         ),  // SDRAM CPU ack → gating READY Z80
     .cpu_soon_in ( cpu_soon_w       ),
@@ -934,6 +933,8 @@ sysctrl sysctrl_inst (
     .system_waitgate     ( sys_waitgate     ),
     .system_hlock        ( sys_hlock        ),
     .system_mono         ( sys_mono         ),
+    .system_snap         ( sys_snap         ),
+    .system_uart         ( sys_uart         ),
     .system_tapesnd      ( sys_tapesnd      ),
     .system_volume       ( sys_volume       ),
     .system_vpos         ( sys_vpos         ),
@@ -1085,6 +1086,32 @@ sd_card #(.CLK_DIV(3'd2), .SIMULATE(0), .IMAGE_FIFO_BITS(1)) sd_card_inst (
 // Pixel clock enable : 16 MHz depuis clk32 (même logique que ce_16_r dans cpc_core)
 reg ce_pix_r;
 always @(posedge clk32) ce_pix_r <= ~ce_pix_r;
+
+// DEBUG snapshot: S1 + S2 (OSD Debug / Snapshot = S1+S2) freeze the Z80 and send the 64 KB base RAM on pin 48;
+// UART baud rate from the OSD (id u): 0 = 115200 (278 clk32 per bit), 1 = 460800 (69), 2 / 3 = 921600 (35)
+wire [8:0] snap_div = (sys_uart == 2'd0) ? 9'd278 : (sys_uart == 2'd1) ? 9'd69 : 9'd35;
+cpc_snapshot #(.BASE(23'h020000)) snapshot_inst (
+    .clk        ( clk32            ),
+    .rst        ( por              ),
+    .enable     ( sys_snap         ),
+    .bit_div    ( snap_div         ),
+    .crtc_type  ( sys_crtc         ),
+    .crtc_regs  ( snap_crtc        ),
+    .pal        ( snap_pal         ),
+    .btn_a      ( user             ),
+    .btn_b      ( reset            ),
+    .ok         ( core_wr_rd_done & ~rom_busy & ~boot_busy_w & sdram_ready ),
+    .pc         ( core_dbg_pc      ),
+    .rsel       ( snap_rsel        ),
+    .mmr        ( snap_mmr         ),
+    .gam        ( snap_gam         ),
+    .busy       ( snap_busy        ),
+    .addr       ( snap_addr        ),
+    .req        ( snap_req         ),
+    .ack        ( boot_ack_w       ),
+    .din        ( boot_dout_w      ),
+    .tx         ( snap_tx          )
+);
 
 // -- Étage 1 : color_mix — palette CPC (2-bit RGB → 8-bit RGB) --
 wire [7:0] cm_r, cm_g, cm_b;

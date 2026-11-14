@@ -27,6 +27,7 @@ add_file src/mcu/sd_arb.v
 add_file src/core/cpc_tape.v
 add_file src/core/cpc_taprec.v
 add_file src/core/cpc_romload.v
+add_file src/core/cpc_snapshot.v
 add_file src/rtl/tape/tzxplayer.vhd
 add_file src/mcu/sd_card.v
 add_file src/mcu/sd_rw.v

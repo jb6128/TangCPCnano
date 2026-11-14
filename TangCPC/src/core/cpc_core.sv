@@ -142,7 +142,13 @@ module cpc_core #(
     // CPU bus (Phase 3c)
     output [15:0]   cpu_addr,
     output  [7:0]   cpu_dout,
-    input   [7:0]   cpu_din,        // données SDRAM → CPU (Phase 3c)
+    // DEBUG snapshot (cpc_snapshot): last values written by the Z80
+    output reg [7:0] snap_rsel,     // ROM select (&DF00: any I/O write with A13 = 0)
+    output reg [7:0] snap_mmr,      // RAM configuration (A15 = 0, D[7:6] = 11)
+    output reg [7:0] snap_gam,      // Gate Array mode / ROM enable (A15 = 0, D[7:6] = 10)
+    output reg [127:0] snap_crtc,   // CRTC registers R0..R15 (8 bits each, R0 in bits 7:0), as last written (nCS = A14, RS = A8)
+    output reg  [84:0] snap_pal,    // Gate Array palette: 17 x 5 bit hardware colour numbers, pens 0..15 then the border
+    input   [7:0]   cpu_din,       // données SDRAM → CPU (Phase 3c)
     input           cpu_ack_in,     // SDRAM CPU read/write ack (pour gating READY)
     input           cpu_soon_in,    // SDRAM read data ready within <= 4 cycles
     input           wait_gate_en,   // OSD: 1 = Z80 waits for SDRAM data, 0 = never (test only)
@@ -612,6 +618,32 @@ wire        mb_iorq, mb_rd, mb_wr, mb_m1;
 // last opcode fetch address (shown on the LEDs with S1+S2, to see where a hung Z80 sits)
 always @(posedge clk32) if (mb_m1 & mem_rd) dbg_pc <= cpu_addr;
 wire  [7:0] fdc_dout;
+// DEBUG snapshot: last ROM select / RAM configuration / Gate Array mode / CRTC registers / palette written by the Z80
+// (edge of the I/O write; the chip files UM6845R.v and ga40010.sv are not touched, the values are shadowed here)
+reg io_wr_q;
+reg [4:0] snap_crtc_sel;                 // CRTC register number selected by the last write with RS = 0
+reg [4:0] snap_pen;                      // Gate Array pen selected last (bit 4 = border)
+wire io_wr_c = mb_iorq & mb_wr;
+always @(posedge clk32) begin
+    io_wr_q <= io_wr_c;
+    if (io_wr_c & ~io_wr_q) begin
+        if (~cpu_addr[13]) snap_rsel <= cpu_dout;
+        if (~cpu_addr[15] && cpu_dout[7:6] == 2'b11) snap_mmr <= cpu_dout;
+        if (~cpu_addr[15] && cpu_dout[7:6] == 2'b10) snap_gam <= cpu_dout;
+        // CRTC (&BCxx / &BDxx: A14 = 0, RS = A8): register select / register write (R16, R17 are read only)
+        if (~cpu_addr[14]) begin
+            if (~cpu_addr[8]) snap_crtc_sel <= cpu_dout[4:0];
+            else if (~snap_crtc_sel[4]) snap_crtc[{snap_crtc_sel[3:0], 3'b000} +: 8] <= cpu_dout;
+        end
+        // Gate Array (&7Fxx: A15 = 0, A14 = 1): D[7:6] = 00 pen select, 01 colour of the selected pen / border
+        if (~cpu_addr[15] && cpu_addr[14]) begin
+            if (cpu_dout[7:6] == 2'b00) snap_pen <= cpu_dout[4:0];
+            else if (cpu_dout[7:6] == 2'b01)
+                // pen bit 4 selects the border (entry 16 = bit 80), whatever the low bits are (as ga40010.sv does)
+                snap_pal[(snap_pen[4] ? 9'd80 : ({5'd0, snap_pen[3:0]} * 9'd5)) +: 5] <= cpu_dout[4:0];
+        end
+    end
+end
 wire  [7:0] cpu_din_bus = mb_iorq ? fdc_dout : cpu_din;
 
 cpc_fdc fdc_inst (
