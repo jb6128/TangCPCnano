@@ -38,7 +38,7 @@ Note: CPC464 added in v0.6, needs new `boot.rom` to be flashed!
 
 ## OSD menu
 
-Press **F12** to open the on-screen menu. Settings are stored with **Save settings** (`cpc.ini`). **Cold boot** behaves like a power-on (`cpc.ini` is loaded again), **Factory boot** starts with all settings at their defaults and without external ROMs (`cpc.ini` is neither read nor changed).
+Press **F12** to open the on-screen menu. Settings are stored with **Save settings** (`cpc.ini`). **Cold boot** behaves like a power-on (`cpc.ini` is loaded again). **Factory boot** starts with all settings at their defaults and without external ROMs (`cpc.ini` is neither read nor changed; note: the OSD will still show the last settings).
 
 **Debug** option `Snapshot`: `Off` / `S1+S2`. With `S1+S2` pressing S1 and S2 together sends a 64 KB RAM snapshot (including a header) over UART (pin 48, 115200/460800/921600 8N1) and halts the Z80 meanwhile. See `snap_check.py` and `snap_to_png.py` in `tools/`.
 
@@ -131,6 +131,7 @@ Caution: Use at your own risk.
 ## Known limitations
 
 - The OSD menu cannot show which ROM slots are loaded.
+- After Factory boot the OSD shows the last settings, not the defaults that are running.
 - Some games or demos that change the CRTC timing (e.g. Jet Set Willy) show a rolling picture on HDMI. If `CRTC: 1` does not help, try option `V lock: Follow`. However `V lock` can show brief picture dropouts on HDMI when the monitor resyncs; a frame buffer would be needed to retime them.
 - A phantom "cursor right" can appear when the monitor is switched to the HDMI input (floating DB9 RIGHT line); it is not fully explained.
 - The Pico UART keyboard path is still in the RTL but is not used by the current setup.
