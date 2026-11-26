@@ -523,6 +523,7 @@ wire  [2:0] sys_vrate;                      // OSD "V rate": 1 << value rows per
 wire        vreset_any;                 // = vreset_pulse (full HDMI re-alignment; 'V pos' only loads the row counter, see below)
 wire        sys_rgbout;
 wire  [1:0] sys_rgbph;
+wire  [1:0] sys_scan;                       // OSD "Scanlines": darkening of the repeated HDMI row 0 / 25 / 50 / 75 %
 wire        sys_firesw;
 wire        sys_numpad;
 wire        sys_wide;
@@ -942,6 +943,7 @@ sysctrl sysctrl_inst (
     .system_vrate        ( sys_vrate        ),
     .system_rgbout       ( sys_rgbout       ),
     .system_rgbph        ( sys_rgbph        ),
+    .system_scan         ( sys_scan         ),
     .system_firesw       ( sys_firesw       ),
     .system_numpad       ( sys_numpad       ),
     .system_wide         ( sys_wide         ),
@@ -1185,13 +1187,12 @@ assign csync = sys_rgbout ? csync_r : 1'bz;
 // -- Étage 2 : scandoubler — 15kHz → 31kHz --
 // ce_divider=1 : ce_x1 = i_div[0] = 16MHz (sample entrée), ce_x2 = 1'b1 (32MHz sortie)
 wire [5:0] sd_r, sd_g, sd_b;
-wire       sd_hs, sd_vs;
+wire       sd_hs, sd_vs, sd_row_dim;
 
 scandoubler #(.HCNT_WIDTH(10)) scandoubler_inst (
     .clk_sys    ( clk32         ),
     .bypass     ( 1'b0          ),    // activer le doubleur de lignes
     .ce_divider ( 1'b1          ),    // entrée 16 MHz sur clk_sys 32 MHz
-    .scanlines  ( 2'b00         ),    // pas de scanlines
 
     .r_in       ( cm_r[7:4]     ),    // 4 bits MSB du 8-bit
     .g_in       ( cm_g[7:4]     ),
@@ -1207,13 +1208,30 @@ scandoubler #(.HCNT_WIDTH(10)) scandoubler_inst (
     .g_out      ( sd_g          ),
     .b_out      ( sd_b          ),
     .hs_out     ( sd_hs         ),
-    .vs_out     ( sd_vs         )
+    .vs_out     ( sd_vs         ),
+    .row_dim    ( sd_row_dim    )
 );
 
 // Green monitor: the scandoubler line buffer is 4 bit per channel. B is unused in this mode, so G[3:2] of color_mix
 // (needed to tell the 27 inks apart) is carried in its place: sd_b[5:4]. 6-bit green = {G[7:4], G[3:2]}.
 wire [5:0] sd_g_f = sys_mono ? {sd_g[5:2], sd_b[5:4]} : sd_g;
 wire [5:0] sd_b_f = sys_mono ? 6'd0                   : sd_b;
+
+// OSD 'Scanlines' (id s): the second HDMI row of every CPC line (row_dim, see scandoubler) is darkened by 25 / 50 / 75 %
+// (x*3/4, x/2, x/4) on the final 6-bit values, so the green monitor's carried bits are handled too. HDMI only; the
+// OSD (below) is not dimmed. Note: the HDMI sink should show the 576p picture 1:1 or scale it evenly, else it gets moire.
+function automatic [5:0] sl_dim(input [5:0] x, input [1:0] m);
+    case (m)
+        2'd1:    sl_dim = x - (x >> 2);
+        2'd2:    sl_dim = x >> 1;
+        2'd3:    sl_dim = x >> 2;
+        default: sl_dim = x;
+    endcase
+endfunction
+wire       sl_on = sd_row_dim & (|sys_scan);
+wire [5:0] sl_r  = sl_on ? sl_dim(sd_r,   sys_scan) : sd_r;
+wire [5:0] sl_g  = sl_on ? sl_dim(sd_g_f, sys_scan) : sd_g_f;
+wire [5:0] sl_b  = sl_on ? sl_dim(sd_b_f, sys_scan) : sd_b_f;
 
 // -- Étage 3 : video2hdmi — TMDS --
 // Audio : YM2149 (8 bits non signés, ~0..190) -> 16 bits signés, composante continue retirée
@@ -1254,9 +1272,9 @@ osd_u8g2 osd_inst (
     .gx             ( hcx             ),
     .gy             ( hcy             ),
     .gx_off         ( sys_w800 ? 10'd112 : 10'd128 ),   // 512 - window centre column (400 resp. 384)
-    .r_in           ( sd_r            ),
-    .g_in           ( sd_g_f          ),
-    .b_in           ( sd_b_f          ),
+    .r_in           ( sl_r            ),
+    .g_in           ( sl_g            ),
+    .b_in           ( sl_b            ),
     .r_out          ( vid_r           ),
     .g_out          ( vid_g           ),
     .b_out          ( vid_b           )

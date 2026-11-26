@@ -32,6 +32,7 @@
       <set id="M" value="0"/>
       <set id="G" value="0"/>
       <set id="p" value="0"/>
+      <set id="s" value="0"/>
       <set id="N" value="0"/>
       <set id="V" value="4"/>
       <set id="J" value="0"/>
@@ -266,6 +267,12 @@
         <listentry label="+16 ns" value="1"/>
         <listentry label="+31 ns" value="2"/>
         <listentry label="+47 ns" value="3"/>
+      </list>
+      <list label="Scanlines:" id="s" default="0">
+        <listentry label="Off" value="0"/>
+        <listentry label="25 %" value="1"/>
+        <listentry label="50 %" value="2"/>
+        <listentry label="75 %" value="3"/>
       </list>
     </menu>
     <menu label="Debug">

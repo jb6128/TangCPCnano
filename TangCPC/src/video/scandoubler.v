@@ -26,9 +26,6 @@ module scandoubler
 	input            ce_divider,
 	output           pixel_ena,
 
-	// scanlines (00-none 01-25% 10-50% 11-75%)
-	input      [1:0] scanlines,
-
 	// shifter video interface
 	input            hs_in,
 	input            vs_in,
@@ -48,6 +45,9 @@ module scandoubler
 	// output interface
 	output reg       hs_out,
 	output reg       vs_out,
+	// 1 while the HDMI row repeats the CPC line of the previous HDMI row (second row of a doubled line);
+	// used by top.sv for the 'Scanlines' option. Changes only in the blank end of the HDMI row (RD_SWAP).
+	output reg       row_dim = 1'b0,
 	output reg [5:0] r_out,
 	output reg [5:0] g_out,
 	output reg [5:0] b_out
@@ -82,8 +82,7 @@ end
 assign pixel_ena = bypass ? ce_x1 : ce_x2;
 
 // --------------------- create output signals -----------------
-// latch everything once more to make it glitch free and apply scanline effect
-reg scanline;
+// latch everything once more to make it glitch free
 reg [3:0] r;
 reg [3:0] g;
 reg [3:0] b;
@@ -105,38 +104,9 @@ always @(posedge clk_sys) begin
 		hs_out <= hs_sd;
 		vs_out <= vs_sd;
 
-		// reset scanlines at every new screen
-		if(vs_out != vs_in) scanline <= 0;
-
-		// toggle scanlines at begin of every hsync
-		if(hs_out && !hs_sd) scanline <= !scanline;
-
-		// if no scanlines or not a scanline
-		if(!scanline || !scanlines) begin
-			r_out <= {r, 2'b00 };
-			g_out <= {g, 2'b00 };
-			b_out <= {b, 2'b00 };
-		end else begin
-			case(scanlines)
-				1: begin // reduce 25% = 1/2 + 1/4
-					r_out <= {1'b0, r, 1'b0} + {2'b00, r };
-					g_out <= {1'b0, g, 1'b0} + {2'b00, g };
-					b_out <= {1'b0, b, 1'b0} + {2'b00, b };
-				end
-
-				2: begin // reduce 50% = 1/2
-					r_out <= {1'b0, r, 1'b0};
-					g_out <= {1'b0, g, 1'b0};
-					b_out <= {1'b0, b, 1'b0};
-				end
-
-				3: begin // reduce 75% = 1/4
-					r_out <= {2'b00, r};
-					g_out <= {2'b00, g};
-					b_out <= {2'b00, b};
-				end
-			endcase
-		end
+		r_out <= {r, 2'b00 };
+		g_out <= {g, 2'b00 };
+		b_out <= {b, 2'b00 };
 	end
 end
 
@@ -216,7 +186,12 @@ always @(posedge clk_sys) hs_in_d <= hs_in;
 // (The picture moves down by at most one HDMI row compared with the old behaviour.)
 localparam [9:0] RD_SWAP = 10'd900;
 reg rd_sel = 1'b0;
-always @(posedge clk_sys) if (gcnt == RD_SWAP) rd_sel <= ~line_toggle;
+// A CPC line normally fills two HDMI rows: rd_sel changes before the first one (row_dim = 0) and stays for the
+// repetition (row_dim = 1). For a CPC line shown 1 or 3 times (R0 changed by a demo, VSync) the rule still holds.
+always @(posedge clk_sys) if (gcnt == RD_SWAP) begin
+	rd_sel  <= ~line_toggle;
+	row_dim <= (rd_sel == ~line_toggle);
+end
 
 // timing generation runs 32 MHz (twice the input signal analysis speed)
 always @(posedge clk_sys) begin
